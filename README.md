@@ -7,27 +7,44 @@ archive and search everything you read.
 Built to be called by any MCP-aware agent harness (Claude, opencode, etc.)
 over stdio. Works with Gmail and any IMAP/SMTP provider.
 
-> **Standalone rewrite.** This project is a clean, security-hardened
-> rebuild of the earlier prototype. Core security invariants were carried
-> over verbatim; several deliberately-added behavioral changes are flagged
-> with ⚠ below.
+> **Standalone rewrite.** This project is a clean, hardened rebuild of the
+> earlier prototype, built around one hard-won invariant: consequence-critical
+> bytes must **never** enter the model's context window. The prototype earned
+> that invariant the hard way — a low-parameter local model reading and
+> repeating high-bit key material corrupted it. This rewrite carries the
+> invariant over verbatim; several deliberately-added behavioral changes are
+> flagged with ⚠ below.
 
 ## Why this design
 
-Keys and bodies must **never** reach the model's context window:
+The model is the least reliable component in the pipeline. Small local models
+(the ones that run on consumer hardware) occasionally mangle byte-exact data
+— a quoting battle, a garbled regex, a corrupted key block. For ordinary text
+that is noise; for private keys, passphrases, and ciphertext it is
+unacceptable. So the design rule is:
+
+**Anything whose bytes must not change never enters the model's context.**
+
+That rule, not a threat model, is the primary reason for every invariant
+below. They are reliability controls: they keep high-consequence data on the
+side of the boundary the model cannot corrupt. The same controls also happen
+to harden the tool against an untrusted model and a partially-trusted host —
+useful, but derived. The primary enemy here is entropy, not malice.
 
 - **Inbound PGP key interception** — public keys that arrive by email are
   imported and linked to the sender's contact *before* the body reaches the
   model. The block is replaced by a notice, never shown.
 - **No silent downgrade (⚠)** — `email_send` encrypts by default. If no key
   is on file for the recipient it **refuses to send**; the model must
-  explicitly choose `encrypt=False` to send in the clear.
+  explicitly choose `encrypt=False` to send in the clear. A model that
+  guesses wrong silently is worse than one that stops and asks.
 - **Full fingerprints only** — 16-char key IDs are rejected everywhere
   (Evil32 collision attack).
 - **Secrets are opaque** — `SecretString` wraps passphrase/password; reprs,
   logs, tracebacks show `***`. Private keys are never exported.
 - **Fail-fast config (⚠)** — missing secrets abort startup with a list,
-  never a warning and never a fallback default.
+  never a warning and never a fallback default. A half-configured server is
+  a guesser; fail-fast is fail-safe.
 
 ## Tool surface
 

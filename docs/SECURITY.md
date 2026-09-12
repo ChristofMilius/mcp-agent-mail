@@ -2,13 +2,25 @@
 
 ## Threat model
 
-The adversary is **the model**: an opaque, remotely-controlled consumer of the
-MCP tool surface that must not obtain private key material, passphrases, or
-plaintext it is not entitled to. Secondary adversaries are local processes
-reading default-permission files, and network observers.
+The primary threat this design engineers against is **the model's own
+fallibility**: an LLM — often a low-parameter local model — that can corrupt
+consequence-critical data (private keys, passphrases, ciphertext) merely by
+handling it. This is not hypothetical; the prototype demonstrated it in
+practice. Everything here is arranged so that byte-exact material **never
+enters the model's context window** in the first place.
 
-We optimize for **no accidental exposure** over convenience. Where a feature
-would demand loosening a guarantee, the feature is excluded.
+Adversarial readings are secondary concerns that the same arrangement
+satisfies:
+
+- **The model as adversary** — an opaque, remotely-controlled consumer of the
+  MCP tool surface that must not obtain key material, passphrases, or
+  plaintext it is not entitled to.
+- **Local processes** reading default-permission files.
+- **Network observers** on the wire.
+
+We optimize for **no accidental corruption or exposure** over convenience.
+Where a feature would demand loosening a guarantee, the feature is excluded.
+Reliability first; secrecy is a stricter consequence of the same rule.
 
 ## Guarantees
 
