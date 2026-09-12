@@ -40,7 +40,8 @@ _FILENAME_SAFE_RE = re.compile(r"[^\w.\-]")
 
 
 class EmailArchive:
-    """Append-only JSONL archive of read emails, deduplicated by uid."""
+    """Append-only JSONL archive of read emails. Latest-wins per uid: re-reads
+append a refreshed line so archive_get reflects the newest decrypt state."""
 
     def __init__(self, cfg):
         self.path = Path(cfg.archive_path)
@@ -83,8 +84,9 @@ class EmailArchive:
 
     def record(self, email: dict) -> bool:
         """
-        Archive one email. Returns True if a new line was written, False if
-        the uid was already archived or the record was rejected.
+        Archive one email. Latest-wins: a re-read appends a refreshed line so
+        the archive self-heals when a previously undecryptable message becomes
+        readable. Returns True if a line was written, False if rejected.
 
         `email` is a dict with keys: uid, folder, sender, to, subject, date,
         body, attachments (list of {filename, content_type, size}),
@@ -95,9 +97,6 @@ class EmailArchive:
             logger.warning("[archive] refusing to archive email with no uid")
             return False
         uid = str(uid)
-
-        if uid in self._seen_uids:
-            return False
 
         decrypt_failed = bool(email.get("decrypt_failed", False))
         body = "" if decrypt_failed else (email.get("body") or "")

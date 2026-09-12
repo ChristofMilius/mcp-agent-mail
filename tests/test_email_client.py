@@ -94,6 +94,103 @@ class TestExtractBody:
         assert "<b>" not in body
 
 
+ARMORED = "-----BEGIN PGP MESSAGE-----\n\nc2VjcmV0\n-----END PGP MESSAGE-----\n"
+
+
+def _attached_pgp_message(filename="encrypted.asc", payload=ARMORED, ctype="application/octet-stream"):
+    import email.encoders
+    import email.mime.base
+
+    outer = MIMEMultipart()
+    outer.attach(MIMEText("", "plain", "utf-8"))
+    f = email.mime.base.MIMEBase(*ctype.split("/", 1))
+    f.set_payload(payload)
+    email.encoders.encode_base64(f)
+    f.add_header("Content-Disposition", "attachment", filename=filename)
+    outer.attach(f)
+    return outer
+
+
+class TestPgpAttachmentDecrypt:
+    def test_armored_attachment_text_extracted(self):
+        msg = _attached_pgp_message()
+        body, atts = EmailClient._extract_body(msg)
+        assert body == ""
+        assert atts[0]["filename"] == "encrypted.asc"
+        assert atts[0]["size"] == len(ARMORED.encode("utf-8"))
+        texts = EmailClient._pgp_attachment_texts(msg)
+        assert len(texts) == 1
+        assert "BEGIN PGP MESSAGE" in texts[0]
+
+    def test_pdf_attachment_not_a_pgp_candidate(self):
+        import email.encoders
+        import email.mime.base
+
+        outer = MIMEMultipart()
+        outer.attach(MIMEText("notes", "plain", "utf-8"))
+        f = email.mime.base.MIMEBase("application", "pdf")
+        f.set_payload(b"%" * 1000)
+        email.encoders.encode_base64(f)
+        f.add_header("Content-Disposition", "attachment", filename="report.pdf")
+        outer.attach(f)
+        assert EmailClient._pgp_attachment_texts(outer) == []
+
+    def test_marker_without_pgp_name_or_type_not_candidate(self):
+        msg = _attached_pgp_message(filename="notes.txt", ctype="text/plain")
+        assert EmailClient._pgp_attachment_texts(msg) == []
+
+    def test_decrypt_falls_back_to_attachment(self):
+        crypto = type("C", (), {"decrypt": lambda self, t: "DECRYPTED:" + t.splitlines()[1]})()
+        client = EmailClient.__new__(EmailClient)
+        client.crypto = crypto
+        body, status, source, failed = client._decrypt_pgp("no inline marker", _attached_pgp_message())
+        assert status == "decrypted"
+        assert source == "attachment"
+        assert failed is False
+        assert body.startswith("DECRYPTED:")
+
+    def test_decrypt_inline_wins(self):
+        crypto = type("C", (), {"decrypt": lambda self, t: "INLINE-DECRYPTED"})()
+        client = EmailClient.__new__(EmailClient)
+        client.crypto = crypto
+        body, status, source, failed = client._decrypt_pgp(ARMORED, _attached_pgp_message())
+        assert status == "decrypted"
+        assert source == "inline"
+        assert body == "INLINE-DECRYPTED"
+
+    def test_no_marker_means_not_encrypted(self):
+        import email.encoders
+        import email.mime.base
+
+        crypto = type("C", (), {"decrypt": lambda self, t: "unused"})()
+        client = EmailClient.__new__(EmailClient)
+        client.crypto = crypto
+        outer = MIMEMultipart()
+        outer.attach(MIMEText("plain hello", "plain", "utf-8"))
+        f = email.mime.base.MIMEBase("application", "pdf")
+        f.set_payload(b"%" * 100)
+        email.encoders.encode_base64(f)
+        f.add_header("Content-Disposition", "attachment", filename="report.pdf")
+        outer.attach(f)
+        body, status, source, failed = client._decrypt_pgp("plain hello", outer)
+        assert status == "not_encrypted"
+        assert source == ""
+        assert failed is False
+        assert body == "plain hello"
+
+    def test_decrypt_failure_reported(self):
+        crypto = type("C", (), {
+            "decrypt": lambda self, t: (_ for _ in ()).throw(RuntimeError("boom"))
+        })()
+        client = EmailClient.__new__(EmailClient)
+        client.crypto = crypto
+        body, status, source, failed = client._decrypt_pgp("no marker", _attached_pgp_message())
+        assert status == "decrypt_failed"
+        assert failed is True
+        assert source == "attachment"
+        assert body == ""
+
+
 class _ImportCrypto:
     """Fake crypto capturing what gets imported and returning fingerprints."""
 

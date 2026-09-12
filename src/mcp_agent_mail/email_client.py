@@ -274,17 +274,7 @@ class EmailClient:
             # Inbound PGP interception BEFORE returning/storing.
             plain, key_results = self.key_blocks.process(plain, sender)
 
-            decrypt_failed = False
-            gpg_status = "not_encrypted"
-            if "-----BEGIN PGP MESSAGE-----" in plain:
-                try:
-                    plain = self.crypto.decrypt(plain)
-                    gpg_status = "decrypted"
-                except Exception as e:
-                    logger.error("[email] decrypt failed uid=%s: %s", uid, type(e).__name__)
-                    plain = ""
-                    decrypt_failed = True
-                    gpg_status = "decrypt_failed"
+            plain, gpg_status, gpg_source, decrypt_failed = self._decrypt_pgp(plain, msg)
 
             full_body = plain
             body = full_body
@@ -325,6 +315,8 @@ class EmailClient:
                     f"Body truncated to {BODY_CAP} chars. Full text stored in the "
                     f"archive — call archive_get with uid={uid} to retrieve it."
                 )
+            if gpg_source:
+                result["gpg_source"] = gpg_source
             if key_results:
                 result["pgp_keys_intercepted"] = key_results
                 result["instructions"] = (
@@ -377,6 +369,57 @@ class EmailClient:
                 )
 
         return "\n".join(t for t in text_parts if t).strip(), attachments
+
+    @staticmethod
+    def _pgp_attachment_texts(msg) -> list[str]:
+        """
+        Return decoded text of armored PGP-message attachments (.asc/.pgp/.gpg
+        or pgp content types). Payloads stay internal — never returned to the
+        caller, never archived. Used so ciphertext sent as an attachment (the
+        GpgOL/Enigmail style) is decrypted like inline PGP.
+        """
+        out: list[str] = []
+        if not msg.is_multipart():
+            return out
+        for part in msg.walk():
+            disp = str(part.get("Content-Disposition") or "")
+            filename = part.get_filename() or ""
+            is_attachment = "attachment" in disp.lower() or bool(filename)
+            if not is_attachment:
+                continue
+            low = filename.lower()
+            pgp_name = any(bits in low for bits in (".asc", ".pgp", ".gpg"))
+            ctype = part.get_content_type()
+            pgp_type = ctype in ("application/pgp-encrypted", "application/octet-stream")
+            if not (pgp_name or pgp_type):
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            text = payload.decode("utf-8", errors="replace")
+            if "-----BEGIN PGP MESSAGE-----" in text:
+                out.append(text)
+        return out
+
+    def _decrypt_pgp(self, plain: str, msg) -> tuple[str, str, str, bool]:
+        """
+        Return (body, gpg_status, gpg_source, decrypt_failed).
+        Tries the inline body first, then armored PGP-message attachments.
+        """
+        if "-----BEGIN PGP MESSAGE-----" in plain:
+            try:
+                return self.crypto.decrypt(plain), "decrypted", "inline", False
+            except Exception as e:
+                logger.error("[email] decrypt failed (inline): %s", type(e).__name__)
+                return "", "decrypt_failed", "inline", True
+        for text in self._pgp_attachment_texts(msg):
+            if "-----BEGIN PGP MESSAGE-----" in text:
+                try:
+                    return self.crypto.decrypt(text), "decrypted", "attachment", False
+                except Exception as e:
+                    logger.error("[email] decrypt failed (attachment): %s", type(e).__name__)
+                    return "", "decrypt_failed", "attachment", True
+        return plain, "not_encrypted", "", False
 
     # ------------------------------------------------------------------
     # SMTP

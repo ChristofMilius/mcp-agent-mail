@@ -37,11 +37,13 @@ class TestRecord:
         assert got["body"] == "some plaintext body"
         assert got["attachments"][0]["filename"] == "a.pdf"
 
-    def test_dedupe_by_uid(self, tmp_project):
+    def test_latest_wins_on_reread(self, tmp_project):
         ar = make_archive(tmp_project)
         assert ar.record(sample_email()) is True
-        assert ar.record(sample_email(subject="Different")) is False
-        assert ar.get(UID)["subject"] == "Hello"
+        assert ar.record(sample_email(subject="Different", body="refreshed body")) is True
+        got = ar.get(UID)
+        assert got["subject"] == "Different"
+        assert got["body"] == "refreshed body"
 
     def test_rejects_missing_uid(self, tmp_project):
         ar = make_archive(tmp_project)
@@ -67,7 +69,7 @@ class TestRecord:
         ar.record(sample_email(body="persisted"))
         ar2 = EmailArchive(type("Cfg", (), {"archive_path": env["ARCHIVE_PATH"]})())
         assert ar2.get(UID)["body"] == "persisted"
-        assert ar2.record(sample_email(subject="dup")) is False
+        assert ar2.record(sample_email(subject="dup")) is True
 
 
 class TestSearch:
