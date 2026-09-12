@@ -26,10 +26,19 @@ unacceptable. So the design rule is:
 **Anything whose bytes must not change never enters the model's context.**
 
 That rule, not a threat model, is the primary reason for every invariant
-below. They are reliability controls: they keep high-consequence data on the
-side of the boundary the model cannot corrupt. The same controls also happen
-to harden the tool against an untrusted model and a partially-trusted host —
-useful, but derived. The primary enemy here is entropy, not malice.
+below. They are reliability controls: they keep high-consequence data on
+the side of the boundary the model cannot corrupt. The same controls also
+happen to harden the tool against an untrusted model and a partially-trusted
+host — useful, but derived. The primary enemy here is entropy, not malice.
+
+There's a third, pragmatic face of the same rule: **context is the scarcest
+resource on a local model, and high-entropy bytes are its worst possible
+consumer.** A key block, an armored ciphertext, a base64 payload is nearly
+incompressible noise — it burns tokens at maximal density and returns zero
+usable signal. Keeping it out of the context window doesn't just protect its
+bytes; it wins back expensive context the model would otherwise waste
+repeating and re-mangling noise it was never going to use.
+
 
 - **Inbound PGP key interception** — public keys that arrive by email are
   imported and linked to the sender's contact *before* the body reaches the
