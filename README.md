@@ -10,7 +10,7 @@ over stdio. Works with Gmail and any IMAP/SMTP provider.
 > **Standalone rewrite.** This project is a clean, security-hardened
 > rebuild of the earlier prototype. Core security invariants were carried
 > over verbatim; several deliberately-added behavioral changes are flagged
-> with ⚠ below. See `MILESTONE.md` for the full journal.
+> with ⚠ below.
 
 ## Why this design
 
@@ -162,7 +162,6 @@ seed fake secrets and mock the transports.
 
 - `docs/SECURITY.md` — threat model, guarantees, trade-offs
 - `docs/ARCHITECTURE.md` — module map and data flow
-- `MILESTONE.md` — living journal and roadmap
 
 ## License
 
