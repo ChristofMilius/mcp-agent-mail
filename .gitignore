@@ -43,6 +43,9 @@ logs/
 exported_keys/
 keys/
 
+# Internal journal — never published
+MILESTONE.md
+
 # OS
 .DS_Store
 Thumbs.db
