@@ -1,0 +1,260 @@
+"""
+contacts.py — Contact book manager
+==================================
+Security properties carried over intact:
+  - set_fingerprint() accepts FULL 40-char fingerprints only.
+    Short (16-char) key IDs are vulnerable to the 'Evil32' collision attack
+    and are rejected, not merely warned about.
+  - find_and_link_key() matches by exact UID email (not substring), and
+    refuses when multiple keys match — ambiguity must be resolved via
+    contact_set_fingerprint() with the exact full fingerprint.
+
+Zero-ambiguity additions:
+  - Every contact record tracks key provenance: `key_linked_at` (ISO time)
+    and `key_source` ("keyring_uid_match" | "manual" | "cleared" | "").
+  - contact_add() clears a stale fingerprint when the email changes — a
+    fingerprint linked to the old address is ambiguous for the new one.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
+# Full GPG fingerprint: exactly 40 hex characters
+_FULL_FINGERPRINT_RE = re.compile(r"^[0-9A-Fa-f]{40}$")
+
+# Provenance values recorded when a fingerprint is linked / cleared.
+SOURCE_KEYRING_MATCH = "keyring_uid_match"
+SOURCE_MANUAL = "manual"
+SOURCE_CLEARED = "cleared"
+
+
+def _uid_email(uid: str) -> str:
+    """
+    Extract the email address from a GPG UID string ('Name <email>').
+    Returns lowercased email, or lowercased full UID if no angle brackets.
+    """
+    match = re.search(r"<([^>]+)>", uid)
+    return match.group(1).lower() if match else uid.lower()
+
+
+class ContactBook:
+    def __init__(self, cfg):
+        self.path = Path(cfg.contacts_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._data: dict = {}
+        self._load()
+
+    def _load(self):
+        if self.path.exists():
+            with open(self.path, encoding="utf-8") as f:
+                self._data = json.load(f)
+        else:
+            self._data = {}
+            self._save()
+
+    def _save(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, indent=2, ensure_ascii=False)
+
+    def _normalize(self, name_or_email: str) -> str | None:
+        if name_or_email in self._data:
+            return name_or_email
+        lower = name_or_email.lower()
+        for key in self._data:
+            if key.lower() == lower:
+                return key
+        for key, val in self._data.items():
+            if val.get("email", "").lower() == lower:
+                return key
+        for key in self._data:
+            if key.lower().startswith(lower):
+                return key
+        return None
+
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+
+    def list_all(self) -> list:
+        result = []
+        for name, info in self._data.items():
+            result.append(self._shape(name, info))
+        return sorted(result, key=lambda x: x["name"].lower())
+
+    def get(self, name_or_email: str) -> dict | None:
+        key = self._normalize(name_or_email)
+        if key is None:
+            return None
+        return self._shape(key, self._data[key])
+
+    def _shape(self, key: str, info: dict) -> dict:
+        """Shape a stored contact record into its public dict."""
+        return {
+            "name": key,
+            "email": info.get("email", ""),
+            "gpg_fingerprint": info.get("gpg_fingerprint", ""),
+            "has_gpg_key": bool(info.get("gpg_fingerprint")),
+            "key_source": info.get("key_source", ""),
+            "key_linked_at": info.get("key_linked_at", ""),
+            "notes": info.get("notes", ""),
+            "added": info.get("added", ""),
+            "updated": info.get("updated", ""),
+        }
+
+    def get_email(self, name_or_email: str) -> str | None:
+        contact = self.get(name_or_email)
+        if contact is None:
+            return name_or_email if "@" in name_or_email else None
+        return contact["email"]
+
+    def get_fingerprint(self, name_or_email: str) -> str | None:
+        contact = self.get(name_or_email)
+        if contact:
+            return contact.get("gpg_fingerprint") or None
+        return None
+
+    # ------------------------------------------------------------------
+    # Write
+    # ------------------------------------------------------------------
+
+    def add(self, name: str, email: str, notes: str = "", crypto=None) -> dict:
+        """
+        Add a contact record. Accepts NO key material.
+
+        If the contact already exists with a DIFFERENT email, any previously
+        linked fingerprint is cleared: a key linked to the old address is
+        ambiguous for the new one. The returned record makes the resulting
+        key state explicit.
+        """
+        now = datetime.now().isoformat()
+        existing = self._data.get(name)
+        email_changed = existing is not None and existing.get("email", "").lower() != email.lower()
+
+        if existing is None:
+            self._data[name] = {"added": now}
+        elif email_changed:
+            # Stale fingerprint under a changed address would be ambiguous.
+            self._data[name].pop("gpg_fingerprint", None)
+            self._data[name]["key_source"] = SOURCE_CLEARED
+            self._data[name]["key_linked_at"] = now
+
+        self._data[name].update({
+            "email": email,
+            "notes": notes,
+            "updated": now,
+        })
+        self._save()
+
+        return {
+            "name": name,
+            "email": email,
+            "gpg_fingerprint": self._data[name].get("gpg_fingerprint", ""),
+            "has_gpg_key": bool(self._data[name].get("gpg_fingerprint")),
+            "status": "added",
+            "note": (
+                "Contact added. If their key is in the keyring, "
+                "call contact_link_key() to associate it."
+            ),
+        }
+
+    def find_and_link_key(self, name_or_email: str, crypto) -> dict:
+        """
+        Search keyring for a key whose UID email matches the contact's email,
+        then link the full fingerprint. No key material passes through here.
+
+        Refuses when multiple keys match the same UID email — the ambiguity
+        must be resolved manually with contact_set_fingerprint().
+        """
+        key = self._normalize(name_or_email)
+        if key is None:
+            raise ValueError(f"Contact not found: {name_or_email}")
+        contact_email = self._data[key]["email"].lower()
+        all_keys = crypto.list_keys(secret=False)
+        matches = []
+        for k in all_keys:
+            for uid in k.get("uids", []):
+                if _uid_email(uid) == contact_email:
+                    matches.append(k)
+                    break
+        if not matches:
+            raise ValueError(
+                f"No key in keyring with UID matching '{contact_email}'. "
+                f"Their key must arrive via email (intercepted automatically) "
+                f"or be imported manually with: gpg --import keyfile.asc"
+            )
+        if len(matches) > 1:
+            fps = sorted(m["fingerprint"] for m in matches)
+            raise ValueError(
+                f"Multiple keys match '{contact_email}': {fps}. "
+                f"Ambiguous — use contact_set_fingerprint with the exact full fingerprint."
+            )
+        fingerprint = matches[0]["fingerprint"]
+        now = datetime.now().isoformat()
+        self._data[key]["gpg_fingerprint"] = fingerprint
+        self._data[key]["key_source"] = SOURCE_KEYRING_MATCH
+        self._data[key]["key_linked_at"] = now
+        self._data[key]["updated"] = now
+        self._save()
+        return {
+            "name": key,
+            "email": contact_email,
+            "fingerprint": fingerprint,
+            "keyid": matches[0].get("keyid", ""),
+            "key_source": SOURCE_KEYRING_MATCH,
+            "key_linked_at": now,
+            "status": "linked",
+        }
+
+    def set_fingerprint(self, name_or_email: str, fingerprint: str) -> dict:
+        """
+        Directly associate an already-known GPG fingerprint with a contact.
+
+        FALLBACK — prefer contact_link_key(). Only full 40-char fingerprints
+        are accepted; short key IDs are rejected (Evil32 collision attack).
+        """
+        key = self._normalize(name_or_email)
+        if key is None:
+            raise ValueError(f"Contact not found: {name_or_email}")
+
+        cleaned = fingerprint.replace(" ", "").upper()
+        if not _FULL_FINGERPRINT_RE.match(cleaned):
+            raise ValueError(
+                f"Invalid fingerprint: expected exactly 40 hex characters (full GPG fingerprint), "
+                f"got {len(cleaned)} characters: '{cleaned}'. "
+                f"Short key IDs (16 chars) are not accepted — they are vulnerable to collision "
+                f"attacks. Use the full fingerprint from gpg_list_keys output."
+            )
+
+        now = datetime.now().isoformat()
+        self._data[key]["gpg_fingerprint"] = cleaned
+        self._data[key]["key_source"] = SOURCE_MANUAL
+        self._data[key]["key_linked_at"] = now
+        self._data[key]["updated"] = now
+        self._save()
+        return {
+            "name": key,
+            "fingerprint": cleaned,
+            "key_source": SOURCE_MANUAL,
+            "key_linked_at": now,
+            "status": "updated",
+        }
+
+    def remove(self, name_or_email: str):
+        key = self._normalize(name_or_email)
+        if key is None:
+            raise ValueError(f"Contact not found: {name_or_email}")
+        del self._data[key]
+        self._save()
+
+
+__all__ = [
+    "ContactBook",
+    "SOURCE_KEYRING_MATCH",
+    "SOURCE_MANUAL",
+    "SOURCE_CLEARED",
+    "_uid_email",
+]

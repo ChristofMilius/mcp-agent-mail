@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Ruff
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment / secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Runtime data — may contain decrypted email bodies and logs
+data/
+logs/
+exported_keys/
+keys/
+
+# OS
+.DS_Store
+Thumbs.db
