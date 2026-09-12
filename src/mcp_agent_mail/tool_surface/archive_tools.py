@@ -21,6 +21,12 @@ def register(server, ctx) -> None:
     def archive_search(query: str, limit: int = 20) -> str:
         """Search archived emails (subject/sender/body) — metadata only, no bodies.
 
+        Use this for keyword lookup across mail you have already read. For a
+        recency-sorted listing of a mailbox folder, use email_check_inbox.
+
+        Returns: {query, count, hits}. Each hit is {uid, folder, sender,
+        subject, date, decrypt_failed, archived_at}. Bodies are never included.
+
         Args:
             query: Case-insensitive substring to search for.
             limit: Maximum hits to return (1-200).
@@ -37,6 +43,16 @@ def register(server, ctx) -> None:
     @server.tool()
     def archive_get(uid: str) -> str:
         """Retrieve the full archived body and metadata for an email uid.
+
+        Precondition: the message must have been opened with email_read first —
+        reading is what archives it. A uid that was merely listed
+        (email_check_inbox / archive_search) is NOT archived, and this returns
+        {"status": "not_found"} for it.
+
+        Returns: the read message's full record — uid, folder, sender, to,
+        subject, date, full uncapped body, attachment_count, attachments
+        (metadata only), decrypt_failed (bool; True means the message could not
+        be decrypted and the body is empty), archived_at (ISO timestamp).
 
         Args:
             uid: IMAP uid of the previously-read email.

@@ -24,7 +24,10 @@ def register(server, ctx) -> None:
         folder: str = "INBOX",
         unread_only: bool = False,
     ) -> str:
-        """List recent emails (metadata only: uid, from, to, subject, date).
+        """List recent emails in a folder (metadata only: uid, from, to, subject, date).
+
+        Use this to browse what is in a mailbox folder, newest first. For
+        keyword search across already-read mail, use archive_search.
 
         Args:
             limit: Maximum number of messages to return (1-50).
@@ -52,6 +55,14 @@ def register(server, ctx) -> None:
         metadata only. Public keys found in the body are imported/linked and
         never shown.
 
+        Returns: {uid, folder, from, to, subject, date, body (≤2000 chars),
+        truncated, gpg_status, decrypt_failed, attachment_count, attachments}.
+        gpg_status values: "decrypted" (PGP present and decrypted; gpg_source
+        is "inline" or "attachment"), "decrypt_failed" (ciphertext present but
+        undecryptable; body is empty and decrypt_failed is True),
+        "not_encrypted" (plaintext, no PGP). When truncated, an archive_notice
+        names the exact uid to pass to archive_get.
+
         Args:
             uid: IMAP uid from email_check_inbox.
             folder: Folder containing the message. Defaults to INBOX.
@@ -77,6 +88,10 @@ def register(server, ctx) -> None:
         the send is refused with an explicit message. To send in the clear you
         must re-issue with encrypt=False — unencrypted is always a deliberate,
         explicit choice.
+
+        Returns: {status: "sent", to, subject, encrypted, signed, gpg_status,
+        encryption_note}. Outbound gpg_status is "encrypted" when a key was
+        used or "not_encrypted" when sent in the clear.
 
         Args:
             to: Contact name or email address.
@@ -105,6 +120,9 @@ def register(server, ctx) -> None:
         reply_all: bool = False,
     ) -> str:
         """Reply to an email by uid, preserving subject/thread.
+
+        Returns: same shape as email_send (status, to, subject, encrypted,
+        signed, gpg_status, encryption_note) plus in_reply_to_uid.
 
         Args:
             uid: IMAP uid of the message being replied to.
