@@ -143,6 +143,22 @@ not need the environment pre-seeded:
 }
 ```
 
+### Tighten your harness's tool-use prompt
+
+Small local models occasionally misread an otherwise-unambiguous tool contract
+on first use — e.g. batching two local MCP calls into one invocation array and
+getting the batch rejected. Don't fight this in the server; fix it in the
+harness. Add a one-line tool-use rule to the harness's always-injected context
+(`SOUL.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules` — whichever the harness
+loads from *user-owned* data, so updates don't clobber it):
+
+> One local tool invocation is exactly one entry per `tool_call`; only
+> `connectors__`-type names may be batched together. Mixed or multi-local
+> batches are rejected.
+
+The rule costs tokens once per session prefix, not per call, and removes the
+whole class of first-tool-call failures.
+
 ### CLI commands
 
 | Command | Purpose |
