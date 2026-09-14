@@ -126,7 +126,7 @@ class TestContactTools:
         server = FakeServer()
         ctx = make_ctx(tmp_project)
         register_all(server, ctx)
-        server.tools["contact_add"](name="Alice Example", email="alice@example.com")
+        server.tools["contact_add"](given_name="Alice", surname="Example", email="alice@example.com")
         out = server.tools["contact_list"]()
         assert "Alice Example" in out
 
@@ -134,7 +134,7 @@ class TestContactTools:
         server = FakeServer()
         ctx = make_ctx(tmp_project)
         register_all(server, ctx)
-        server.tools["contact_add"](name="Alice Example", email="alice@example.com")
+        server.tools["contact_add"](given_name="Alice", surname="Example", email="alice@example.com")
         out = server.tools["contact_set_fingerprint"]("Alice Example", "AABB")
         assert "Error in contact_set_fingerprint" in out
 
@@ -143,19 +143,19 @@ class TestContactTools:
         ctx = make_ctx(tmp_project)
         register_all(server, ctx)
         other = "00" * 20
-        server.tools["contact_add"](name="Alice Example", email="alice@example.com")
+        server.tools["contact_add"](given_name="Alice", surname="Example", email="alice@example.com")
         server.tools["contact_set_fingerprint"]("Alice Example", other)
         out = server.tools["contact_clear_key"]("Alice Example", other)
         assert '"status": "cleared"' in out
         listed = server.tools["contact_list"]()
-        assert '"gpg_fingerprint": ""' in listed
+        assert '"gpg_key_fingerprint": ""' in listed
 
     def test_clear_key_mismatch_is_refused(self, tmp_project):
         server = FakeServer()
         ctx = make_ctx(tmp_project)
         register_all(server, ctx)
         other = "00" * 20
-        server.tools["contact_add"](name="Alice Example", email="alice@example.com")
+        server.tools["contact_add"](given_name="Alice", surname="Example", email="alice@example.com")
         server.tools["contact_set_fingerprint"]("Alice Example", other)
         out = server.tools["contact_clear_key"]("Alice Example", "11" * 20)
         assert "Error in contact_clear_key" in out

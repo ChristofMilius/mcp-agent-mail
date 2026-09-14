@@ -57,7 +57,9 @@ Reliability first; secrecy is a stricter consequence of the same rule.
 - `contact_clear_key` refuses to clear unless the caller passes the contact's
   **current linked fingerprint unchanged** (from `contact_get`), and refuses
   outright to clear the agent's own key. Clearing the wrong record fails.
-- Contact records track provenance: `key_source` and `key_linked_at`.
+- Contact records track provenance: `key_source`, `key_linked_at`, and
+  `key_cleared_at` (set when a key is deliberately removed). The only key
+  identifier stored is the full 40-char `gpg_key_fingerprint`.
 
 ### 5. Error boundaries
 

@@ -214,7 +214,7 @@ class _Contacts:
     def list_all(self):
         out = []
         for name, info in self._data.items():
-            out.append({"name": name, "email": info["email"], "gpg_fingerprint": ""})
+            out.append({"name": name, "email": info["email"], "gpg_key_fingerprint": ""})
         return out
 
     def add(self, name, email, notes=""):

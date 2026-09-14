@@ -43,19 +43,25 @@ def register(server, ctx) -> None:
             return tool_error("contact_get", e)
 
     @server.tool()
-    def contact_add(name: str, email: str, notes: str = "") -> str:
+    def contact_add(given_name: str, surname: str, email: str, notes: str = "") -> str:
         """Add or update a contact. Does NOT accept key material.
 
-        If an existing contact's email changes, any previously linked
-        fingerprint is cleared (it belonged to the old address).
+        Records are well-formed by construction: given_name and surname are
+        required and form the display name. Key linking is a separate step
+        (contact_link_key / contact_set_fingerprint).
+
+        If an existing contact's email changes, any previously linked key is
+        cleared (key_source='cleared', key_cleared_at=now): a key linked to
+        the old address is ambiguous for the new one.
 
         Args:
-            name: Contact display name.
+            given_name: Contact's given (first) name.
+            surname: Contact's surname (family name).
             email: Contact email address.
             notes: Optional free-text notes.
         """
         try:
-            result = contacts.add(name=name, email=email, notes=notes)
+            result = contacts.add(given_name=given_name, surname=surname, email=email, notes=notes)
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return tool_error("contact_add", e)

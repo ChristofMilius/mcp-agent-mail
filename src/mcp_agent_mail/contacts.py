@@ -9,9 +9,17 @@ Security properties carried over intact:
     refuses when multiple keys match — ambiguity must be resolved via
     contact_set_fingerprint() with the exact full fingerprint.
 
-Zero-ambiguity additions:
-  - Every contact record tracks key provenance: `key_linked_at` (ISO time)
-    and `key_source` ("keyring_uid_match" | "manual" | "cleared" | "").
+Well-formed records:
+  - Every contact is `given_name` + `surname` (the record key derives from
+    them) + `email`. New contacts are well-formed by construction.
+  - The only key identifier is the full 40-char fingerprint, stored in
+    `gpg_key_fingerprint`. Short key IDs are never stored or accepted.
+  - Key lifecycle provenance:
+      `key_source`     "" | "keyring_uid_match" | "manual" | "cleared"
+      `key_linked_at`  when the fingerprint was linked (set on link, kept as
+                       history after a clear)
+      `key_cleared_at` when the fingerprint was removed; non-empty means
+                       "deliberately cleared" (no redundant boolean)
   - contact_add() clears a stale fingerprint when the email changes — a
     fingerprint linked to the old address is ambiguous for the new one.
 """
@@ -54,9 +62,45 @@ class ContactBook:
         if self.path.exists():
             with open(self.path, encoding="utf-8") as f:
                 self._data = json.load(f)
+            if self._migrate():
+                self._save()
         else:
             self._data = {}
             self._save()
+
+    def _migrate(self) -> bool:
+        """
+        Upgrade legacy flat records to the well-formed schema in place.
+
+        Legacy shape: {name: {added, email, notes, updated, gpg_fingerprint,
+        key_source, key_linked_at}}. Migration maps fields across and fills
+        defaults; surnames cannot be invented, so they are left blank and must
+        be completed during setup. Returns True if any record changed.
+        """
+        changed = False
+        for name, record in self._data.items():
+            if not isinstance(record, dict):
+                continue
+            if "given_name" not in record:
+                record["given_name"] = name
+                changed = True
+            if "surname" not in record:
+                record["surname"] = ""
+                changed = True
+            if "gpg_fingerprint" in record:
+                record["gpg_key_fingerprint"] = record.pop("gpg_fingerprint")
+                changed = True
+            elif "gpg_key_fingerprint" not in record:
+                record["gpg_key_fingerprint"] = ""
+                changed = True
+            for field in ("email", "notes", "added", "updated", "key_source", "key_linked_at"):
+                if field not in record:
+                    record[field] = ""
+                    changed = True
+            if "key_cleared_at" not in record:
+                record["key_cleared_at"] = ""
+                changed = True
+        return changed
 
     def _save(self):
         with open(self.path, "w", encoding="utf-8") as f:
@@ -97,11 +141,14 @@ class ContactBook:
         """Shape a stored contact record into its public dict."""
         return {
             "name": key,
+            "given_name": info.get("given_name", ""),
+            "surname": info.get("surname", ""),
             "email": info.get("email", ""),
-            "gpg_fingerprint": info.get("gpg_fingerprint", ""),
-            "has_gpg_key": bool(info.get("gpg_fingerprint")),
+            "gpg_key_fingerprint": info.get("gpg_key_fingerprint", ""),
+            "has_gpg_key": bool(info.get("gpg_key_fingerprint")),
             "key_source": info.get("key_source", ""),
             "key_linked_at": info.get("key_linked_at", ""),
+            "key_cleared_at": info.get("key_cleared_at", ""),
             "notes": info.get("notes", ""),
             "added": info.get("added", ""),
             "updated": info.get("updated", ""),
@@ -116,46 +163,76 @@ class ContactBook:
     def get_fingerprint(self, name_or_email: str) -> str | None:
         contact = self.get(name_or_email)
         if contact:
-            return contact.get("gpg_fingerprint") or None
+            return contact.get("gpg_key_fingerprint") or None
         return None
 
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
 
-    def add(self, name: str, email: str, notes: str = "", crypto=None) -> dict:
+    def add(self, given_name: str, surname: str, email: str, notes: str = "", crypto=None) -> dict:
         """
-        Add a contact record. Accepts NO key material.
+        Add or update a contact record. Accepts NO key material.
+
+        given_name + surname are required and form the record's display name
+        (the record key). Records are thus well-formed by construction.
 
         If the contact already exists with a DIFFERENT email, any previously
         linked fingerprint is cleared: a key linked to the old address is
         ambiguous for the new one. The returned record makes the resulting
         key state explicit.
         """
+        given_name = given_name.strip()
+        surname = surname.strip()
+        email = email.strip()
+        if not given_name or not surname:
+            raise ValueError(
+                "given_name and surname are required for a well-formed contact record."
+            )
+
+        name = f"{given_name} {surname}"
         now = datetime.now().isoformat()
         existing = self._data.get(name)
         email_changed = existing is not None and existing.get("email", "").lower() != email.lower()
 
         if existing is None:
-            self._data[name] = {"added": now}
-        elif email_changed:
-            # Stale fingerprint under a changed address would be ambiguous.
-            self._data[name].pop("gpg_fingerprint", None)
-            self._data[name]["key_source"] = SOURCE_CLEARED
-            self._data[name]["key_linked_at"] = now
-
-        self._data[name].update({
-            "email": email,
-            "notes": notes,
-            "updated": now,
-        })
+            self._data[name] = {
+                "added": now,
+                "given_name": given_name,
+                "surname": surname,
+                "email": email,
+                "notes": notes,
+                "updated": now,
+                "gpg_key_fingerprint": "",
+                "key_source": "",
+                "key_linked_at": "",
+                "key_cleared_at": "",
+            }
+        else:
+            if email_changed and existing.get("gpg_key_fingerprint"):
+                # Stale fingerprint under a changed address would be ambiguous.
+                existing.pop("gpg_key_fingerprint", None)
+                existing["key_source"] = SOURCE_CLEARED
+                existing["key_cleared_at"] = now
+            existing.update({
+                "given_name": given_name,
+                "surname": surname,
+                "email": email,
+                "notes": notes,
+                "updated": now,
+            })
         self._save()
 
         return {
             "name": name,
+            "given_name": given_name,
+            "surname": surname,
             "email": email,
-            "gpg_fingerprint": self._data[name].get("gpg_fingerprint", ""),
-            "has_gpg_key": bool(self._data[name].get("gpg_fingerprint")),
+            "gpg_key_fingerprint": self._data[name].get("gpg_key_fingerprint", ""),
+            "has_gpg_key": bool(self._data[name].get("gpg_key_fingerprint")),
+            "key_source": self._data[name].get("key_source", ""),
+            "key_linked_at": self._data[name].get("key_linked_at", ""),
+            "key_cleared_at": self._data[name].get("key_cleared_at", ""),
             "status": "added",
             "note": (
                 "Contact added. If their key is in the keyring, "
@@ -196,9 +273,10 @@ class ContactBook:
             )
         fingerprint = matches[0]["fingerprint"]
         now = datetime.now().isoformat()
-        self._data[key]["gpg_fingerprint"] = fingerprint
+        self._data[key]["gpg_key_fingerprint"] = fingerprint
         self._data[key]["key_source"] = SOURCE_KEYRING_MATCH
         self._data[key]["key_linked_at"] = now
+        self._data[key]["key_cleared_at"] = ""
         self._data[key]["updated"] = now
         self._save()
         return {
@@ -232,9 +310,10 @@ class ContactBook:
             )
 
         now = datetime.now().isoformat()
-        self._data[key]["gpg_fingerprint"] = cleaned
+        self._data[key]["gpg_key_fingerprint"] = cleaned
         self._data[key]["key_source"] = SOURCE_MANUAL
         self._data[key]["key_linked_at"] = now
+        self._data[key]["key_cleared_at"] = ""
         self._data[key]["updated"] = now
         self._save()
         return {
@@ -266,7 +345,7 @@ class ContactBook:
         if key is None:
             raise ValueError(f"Contact not found: {name_or_email}")
 
-        current = self._data[key].get("gpg_fingerprint", "")
+        current = self._data[key].get("gpg_key_fingerprint", "")
         cleaned = fingerprint.replace(" ", "").upper()
 
         # Validate the supplied fingerprint format first, same rules as
@@ -282,7 +361,7 @@ class ContactBook:
             return {
                 "name": key,
                 "email": self._data[key].get("email", ""),
-                "gpg_fingerprint": "",
+                "gpg_key_fingerprint": "",
                 "has_gpg_key": False,
                 "status": "no_key",
                 "note": "Contact has no linked PGP key — nothing to clear.",
@@ -304,19 +383,22 @@ class ContactBook:
             )
 
         now = datetime.now().isoformat()
-        self._data[key].pop("gpg_fingerprint", None)
+        # Provenance: key_source="cleared" + key_cleared_at stamped; the
+        # original key_linked_at is kept as history of when the key was linked.
+        self._data[key].pop("gpg_key_fingerprint", None)
         self._data[key]["key_source"] = SOURCE_CLEARED
-        self._data[key]["key_linked_at"] = now
+        self._data[key]["key_cleared_at"] = now
         self._data[key]["updated"] = now
         self._save()
         return {
             "name": key,
             "email": self._data[key].get("email", ""),
-            "gpg_fingerprint": "",
+            "gpg_key_fingerprint": "",
             "has_gpg_key": False,
             "cleared_fingerprint": cleaned,
             "key_source": SOURCE_CLEARED,
-            "key_linked_at": now,
+            "key_linked_at": self._data[key].get("key_linked_at", ""),
+            "key_cleared_at": now,
             "status": "cleared",
             "note": (
                 "Key deliberately cleared. Sends to this contact will be unencrypted "
