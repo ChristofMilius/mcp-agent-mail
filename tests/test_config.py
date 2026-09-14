@@ -34,6 +34,11 @@ class TestConfigFailFast:
         with pytest.raises(ConfigError, match="EMAIL_ADDRESS"):
             Config(require_secrets=True)
 
+    def test_missing_owner_email_aborts(self, monkeypatch):
+        monkeypatch.delenv("OWNER_EMAIL")
+        with pytest.raises(ConfigError, match="OWNER_EMAIL"):
+            Config(require_secrets=True)
+
     def test_tolerant_mode_reports_missing(self, monkeypatch):
         monkeypatch.delenv("EMAIL_PASSWORD")
         cfg = Config(require_secrets=False)
@@ -78,9 +83,13 @@ class TestConfigToggles:
         cfg = Config(require_secrets=True)
         names = [s.split(":")[0] for s in cfg.secret_status()]
         assert set(names) == {
-            "EMAIL_ADDRESS", "EMAIL_PASSWORD", "GPG_KEY_ID", "GPG_PASSPHRASE",
+            "EMAIL_ADDRESS", "OWNER_EMAIL", "EMAIL_PASSWORD", "GPG_KEY_ID",
+            "GPG_PASSPHRASE",
         }
         assert all(s.endswith("set") for s in cfg.secret_status())
+
+    def test_owner_email_parses(self):
+        assert Config(require_secrets=True).owner_email == "owner@example.com"
 
 
 class _FakeProvider:

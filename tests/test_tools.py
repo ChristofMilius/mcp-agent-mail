@@ -1,6 +1,7 @@
 """tests/test_tools.py — tool surface end-to-end through a fake MCPServer."""
 from __future__ import annotations
 
+import json
 import types
 
 from mcp_agent_mail.archive import EmailArchive
@@ -25,7 +26,7 @@ class FakeServer:
         return deco
 
 
-def make_ctx(tmp_project, contact_ops=None):
+def make_ctx(tmp_project, contact_ops=None, seed_json=None):
     root, env = tmp_project
 
     cfg = types.SimpleNamespace(
@@ -66,6 +67,15 @@ def make_ctx(tmp_project, contact_ops=None):
             return {"valid": True, "fingerprint": FPR40, "username": "x", "timestamp": "", "status": "signature valid"}
 
     contacts = ContactBook(cfg)
+    if seed_json:
+        from pathlib import Path
+
+        Path(env["CONTACTS_PATH"]).write_text(
+            json.dumps(seed_json), encoding="utf-8"
+        )
+        contacts = ContactBook(cfg)
+    if contact_ops:
+        contact_ops(contacts)
     archive = EmailArchive(cfg)
 
     class FakeEmailClient:
@@ -150,7 +160,7 @@ class TestContactTools:
         listed = server.tools["contact_list"]()
         assert '"gpg_key_fingerprint": ""' in listed
 
-    def test_clear_key_mismatch_is_refused(self, tmp_project):
+    def test_clear_key_mismatch_is_no_match_json(self, tmp_project):
         server = FakeServer()
         ctx = make_ctx(tmp_project)
         register_all(server, ctx)
@@ -158,7 +168,76 @@ class TestContactTools:
         server.tools["contact_add"](given_name="Alice", surname="Example", email="alice@example.com")
         server.tools["contact_set_fingerprint"]("Alice Example", other)
         out = server.tools["contact_clear_key"]("Alice Example", "11" * 20)
-        assert "Error in contact_clear_key" in out
+        assert '"status": "no_match"' in out
+        assert "could not find a matching pair" in out
+        assert '"gpg_key_fingerprint": "' + other + '"' in server.tools["contact_list"]()
+
+    def test_unknown_contact_clear_key_is_no_match_json(self, tmp_project):
+        server = FakeServer()
+        ctx = make_ctx(tmp_project)
+        register_all(server, ctx)
+        out = server.tools["contact_clear_key"]("Ghost Person", "A" * 40)
+        assert '"status": "no_match"' in out
+        assert "Ghost Person" in out
+
+    def test_clear_key_protects_identity_entry(self, tmp_project):
+        server = FakeServer()
+        agent = {
+            "added": "2026-09-13T00:00:00",
+            "given_name": "Hermes",
+            "surname": "agent of Chris",
+            "email": "agent@example.com",
+            "gpg_key_fingerprint": FPR40,
+            "key_source": "keyring_uid_match",
+            "key_linked_at": "2026-09-13T00:00:00",
+            "key_cleared_at": "",
+            "notes": "",
+            "updated": "2026-09-13T00:00:00",
+        }
+        register_all(server, make_ctx(tmp_project, seed_json={"Hermes the Agent": agent}))
+        out = server.tools["contact_clear_key"]("Hermes the Agent", FPR40)
+        assert '"status": "protected"' in out
+        assert '"identity": "agent"' in out
+        assert '"gpg_key_fingerprint": "' + FPR40 + '"' in server.tools["contact_list"]()
+
+    def test_remove_protects_identity_entry(self, tmp_project):
+        server = FakeServer()
+        agent = {
+            "added": "2026-09-13T00:00:00",
+            "given_name": "Hermes",
+            "surname": "agent of Chris",
+            "email": "agent@example.com",
+            "gpg_key_fingerprint": FPR40,
+            "key_source": "keyring_uid_match",
+            "key_linked_at": "2026-09-13T00:00:00",
+            "key_cleared_at": "",
+            "notes": "",
+            "updated": "2026-09-13T00:00:00",
+        }
+        register_all(server, make_ctx(tmp_project, seed_json={"Hermes the Agent": agent}))
+        out = server.tools["contact_remove"]("Hermes the Agent")
+        assert '"status": "protected"' in out
+        assert '"identity": "agent"' in out
+        assert "Hermes the Agent" in server.tools["contact_list"]()
+
+    def test_set_fingerprint_protects_identity_entry(self, tmp_project):
+        server = FakeServer()
+        agent = {
+            "added": "2026-09-13T00:00:00",
+            "given_name": "Hermes",
+            "surname": "agent of Chris",
+            "email": "agent@example.com",
+            "gpg_key_fingerprint": FPR40,
+            "key_source": "keyring_uid_match",
+            "key_linked_at": "2026-09-13T00:00:00",
+            "key_cleared_at": "",
+            "notes": "",
+            "updated": "2026-09-13T00:00:00",
+        }
+        register_all(server, make_ctx(tmp_project, seed_json={"Hermes the Agent": agent}))
+        out = server.tools["contact_set_fingerprint"]("Hermes the Agent", "11" * 20)
+        assert '"status": "protected"' in out
+        assert '"gpg_key_fingerprint": "' + FPR40 + '"' in server.tools["contact_list"]()
 
 
 class TestCryptoTools:

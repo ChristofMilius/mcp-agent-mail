@@ -54,6 +54,11 @@ repeating and re-mangling noise it was never going to use.
 - **Fail-fast config (⚠)** — missing secrets abort startup with a list,
   never a warning and never a fallback default. A half-configured server is
   a guesser; fail-fast is fail-safe.
+- **Immutable identity entries (⚠)** — the agent (`EMAIL_ADDRESS`) and the
+  owner (`OWNER_EMAIL`) each have exactly one contact entry, fixed at setup.
+  No tool can add, remove, re-key, or clear them, and the server refuses to
+  start until both exist. Identity is a provisioning decision, not a model
+  action.
 
 ## Tool surface
 
@@ -96,7 +101,7 @@ uv sync
    Copy-Item .env.example .env
    ```
 
-   Required: `EMAIL_ADDRESS`, `EMAIL_PASSWORD` (app password),
+   Required: `EMAIL_ADDRESS`, `OWNER_EMAIL`, `EMAIL_PASSWORD` (app password),
    `GPG_KEY_ID` (the agent key's full 40-char fingerprint),
    `GPG_PASSPHRASE`.
 
@@ -112,6 +117,60 @@ uv sync
    uv run mcp-agent-mail doctor     # offline config diagnostics
    uv run mcp-agent-mail doctor --live   # opt-in IMAP + keyring checks
    ```
+
+4. Provision the identity entries (see below). `doctor` shows a
+   `[!!]` line and the server refuses to start until they exist.
+
+### Identity & setup
+
+Two contact entries pin the identity boundary of the whole system and are
+**immutable from the tool surface**. They are provisioned once, by hand
+(or by a future owner-facing CLI) — never created or edited by the tools:
+
+- **Agent entry** — the record whose `email` equals `EMAIL_ADDRESS`. It is
+  the agent's own identity inside the contact book and carries the agent key
+  fingerprint (`GPG_KEY_ID`). Conventional surname: `agent of <owner given name>`.
+- **Owner entry** — the record whose `email` equals `OWNER_EMAIL`. That is
+  the human running the server.
+
+`contact_add`, `contact_remove`, `contact_link_key`,
+`contact_set_fingerprint` and `contact_clear_key` refuse to touch either
+entry (status `protected`). The server fails fast at startup if an identity
+email is absent or held by more than one record.
+
+Minimal `data/contacts.json` with both identities provisioned:
+
+```json
+{
+  "Hermes": {
+    "added": "2026-09-13T00:00:00",
+    "given_name": "Hermes",
+    "surname": "agent of Chris",
+    "email": "agent@example.com",
+    "gpg_key_fingerprint": "AAAABBBBCCCCDDDDEEEEFFFF0000111122223333",
+    "key_source": "keyring_uid_match",
+    "key_linked_at": "2026-09-13T00:00:00",
+    "key_cleared_at": "",
+    "notes": "",
+    "updated": "2026-09-13T00:00:00"
+  },
+  "Chris": {
+    "added": "2026-09-13T00:00:00",
+    "given_name": "Chris",
+    "surname": "Example",
+    "email": "owner@example.com",
+    "gpg_key_fingerprint": "4444555566667777888899990000AAAABBBBCCCC",
+    "key_source": "keyring_uid_match",
+    "key_linked_at": "2026-09-13T00:00:00",
+    "key_cleared_at": "",
+    "notes": "",
+    "updated": "2026-09-13T00:00:00"
+  }
+}
+```
+
+> The `added`/`updated` timestamps are ISO 8601. `key_source` values:
+> `"keyring_uid_match"`, `"manual"`, `"cleared"`.
 
 ## Usage
 
@@ -164,7 +223,7 @@ whole class of first-tool-call failures.
 | Command | Purpose |
 |---|---|
 | `serve` *(default)* | Run the MCP server. `--http --port` for streamable-http |
-| `setup` | Check dependencies, key presence, secret status |
+| `setup` | Check dependencies, key presence, secret status, identity setup |
 | `doctor` | Offline diagnostics; `--live` runs IMAP/keyring checks |
 | `keys` | List keyring keys (`--secret` for private keys) |
 | `archive` | Inspect the JSONL archive (`--search <term>`) |
@@ -176,16 +235,17 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-101 tests cover: secret handling, fail-fast config, fingerprint/key-block
-validation, contact provenance, archive dedup/search, the outbound encryption
-gate, and the full tool surface. No `.env` or real account is needed — tests
-seed fake secrets and mock the transports.
+127 tests cover: secret handling, fail-fast config, identity immutability,
+fingerprint/key-block validation, contact provenance, archive dedup/search,
+the outbound encryption gate, and the full tool surface. No `.env` or real
+account is needed — tests seed fake secrets and mock the transports.
 
 ## Configuration reference
 
 | Var | Default | Purpose |
 |---|---|---|
-| `EMAIL_ADDRESS` | — *(required)* | Account identity / IMAP+SMTP login |
+| `EMAIL_ADDRESS` | — *(required)* | Agent account identity / IMAP+SMTP login |
+| `OWNER_EMAIL` | — *(required)* | Owner (human) identity entry holder |
 | `EMAIL_PASSWORD` | — *(required)* | IMAP/SMTP app password |
 | `GPG_KEY_ID` | — *(required)* | Agent key fingerprint (40 hex) |
 | `GPG_PASSPHRASE` | — *(required)* | Agent key passphrase |

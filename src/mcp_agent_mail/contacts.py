@@ -49,14 +49,54 @@ def _uid_email(uid: str) -> str:
     return match.group(1).lower() if match else uid.lower()
 
 
+class IdentityGuardError(Exception):
+    """
+    Raised when a tool tries to mutate one of the identity entries.
+
+    The agent entry (EMAIL_ADDRESS) and the owner entry (OWNER_EMAIL) are
+    fixed at setup; changing or removing them is a human act (re-setup or a
+    future owner-facing CLI), not a model operation. Carries the role and
+    record name so the tool surface can translate it into a readable
+    response.
+    """
+
+    def __init__(self, role: str, name: str, reason: str):
+        super().__init__(reason)
+        self.role = role
+        self.name = name
+
+
 class ContactBook:
     def __init__(self, cfg):
         self.path = Path(cfg.contacts_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data: dict = {}
-        # Agent's own key fingerprint (cfg.gpg_key_id) — never clearable.
-        self._own_gpg_key_id: str = getattr(cfg, "gpg_key_id", "") or ""
+        # Identity entries — fixed at setup, immutable from the tool surface.
+        # Books built without these config values have inert identity guards.
+        self._agent_email: str = (getattr(cfg, "email_address", "") or "").strip().lower()
+        self._owner_email: str = (getattr(cfg, "owner_email", "") or "").strip().lower()
         self._load()
+
+    def _identity_role(self, email: str) -> str:
+        """Return 'agent', 'owner', or '' for a contact email."""
+        e = (email or "").strip().lower()
+        if self._agent_email and e == self._agent_email:
+            return "agent"
+        if self._owner_email and e == self._owner_email:
+            return "owner"
+        return ""
+
+    def _raise_if_identity(self, key: str) -> None:
+        """Refuse key-operations on the immutable identity entries."""
+        role = self._identity_role(self._data[key].get("email", ""))
+        if role:
+            raise IdentityGuardError(
+                role,
+                key,
+                f"'{key}' is the {role} identity and is immutable from the tool "
+                f"surface. Changing or removing its key is an owner action "
+                f"(re-setup / owner-facing CLI), not a model operation.",
+            )
 
     def _load(self):
         if self.path.exists():
@@ -191,6 +231,16 @@ class ContactBook:
             )
 
         name = f"{given_name} {surname}"
+        role = self._identity_role(email)
+        if role:
+            raise IdentityGuardError(
+                role,
+                name,
+                f"'{email}' is the {role} identity. Identity entries are immutable "
+                f"from the tool surface — they exist once and are set at setup; "
+                f"changing them is an owner action (re-setup).",
+            )
+
         now = datetime.now().isoformat()
         existing = self._data.get(name)
         email_changed = existing is not None and existing.get("email", "").lower() != email.lower()
@@ -251,6 +301,7 @@ class ContactBook:
         key = self._normalize(name_or_email)
         if key is None:
             raise ValueError(f"Contact not found: {name_or_email}")
+        self._raise_if_identity(key)
         contact_email = self._data[key]["email"].lower()
         all_keys = crypto.list_keys(secret=False)
         matches = []
@@ -295,10 +346,12 @@ class ContactBook:
 
         FALLBACK — prefer contact_link_key(). Only full 40-char fingerprints
         are accepted; short key IDs are rejected (Evil32 collision attack).
+        Refuses on identity entries (they carry the setup-supplied key).
         """
         key = self._normalize(name_or_email)
         if key is None:
             raise ValueError(f"Contact not found: {name_or_email}")
+        self._raise_if_identity(key)
 
         cleaned = fingerprint.replace(" ", "").upper()
         if not _FULL_FINGERPRINT_RE.match(cleaned):
@@ -324,67 +377,64 @@ class ContactBook:
             "status": "updated",
         }
 
+    def _no_match(self, name_or_email: str, fingerprint: str) -> dict:
+        """
+        Uniform refusal for any (name, fingerprint) pair that does not match.
+        Echoes caller input only — never reveals whether the name or the
+        fingerprint was the wrong half (no enumeration).
+        """
+        return {
+            "status": "no_match",
+            "query": name_or_email,
+            "reason": f"could not find a matching pair, ({name_or_email}, {fingerprint})",
+        }
+
     def clear_key(self, name_or_email: str, fingerprint: str) -> dict:
         """
         Deliberately remove a contact's linked PGP fingerprint.
 
-        FOOLPROOF against accidental clears of valid fingerprints:
-          - fingerprint MUST exactly match the contact's CURRENTLY linked
-            fingerprint. The caller must read it first via contact_get and
-            pass it unchanged; any mismatch is refused.
-          - The agent's OWN key (cfg.gpg_key_id) can never be cleared — it
-            is the agent's encryption identity, not a contact's.
-          - A contact with no linked key returns a no-op ("no_key"), not an
-            error — clearing nothing is never a failure.
+        Deterministic and foolproof — user-facing outcomes never raise:
+          - The (name, fingerprint) pair must match the book exactly. Any
+            unknown name, keyless contact, or wrong fingerprint yields the
+            same no_match result and changes nothing. Pass the contact's
+            CURRENT fingerprint (from contact_get) unchanged.
+          - Identity entries (agent, owner) are protected: clearing their key
+            returns the 'protected' outcome — that is an owner action
+            (re-setup), not a model operation.
+          - Garbage or short fingerprints can never match a stored full
+            fingerprint, so the pair check already rejects them.
 
         On success the record keeps full provenance: key_source becomes
-        SOURCE_CLEARED and key_linked_at is stamped, so "deliberately
-        removed" is distinguishable from "never had one".
+        "cleared" and key_cleared_at is stamped; the original key_linked_at
+        is preserved as history.
         """
         key = self._normalize(name_or_email)
         if key is None:
-            raise ValueError(f"Contact not found: {name_or_email}")
+            return self._no_match(name_or_email, fingerprint)
 
-        current = self._data[key].get("gpg_key_fingerprint", "")
-        cleaned = fingerprint.replace(" ", "").upper()
-
-        # Validate the supplied fingerprint format first, same rules as
-        # set_fingerprint (no bare 16-char key IDs anywhere).
-        if not _FULL_FINGERPRINT_RE.match(cleaned):
-            raise ValueError(
-                f"Invalid fingerprint: expected exactly 40 hex characters (full GPG fingerprint), "
-                f"got {len(cleaned)} characters: '{cleaned}'. "
-                f"Read the current fingerprint via contact_get and pass it unchanged."
-            )
-
-        if not current:
+        role = self._identity_role(self._data[key].get("email", ""))
+        if role:
             return {
+                "status": "protected",
+                "identity": role,
+                "query": name_or_email,
                 "name": key,
-                "email": self._data[key].get("email", ""),
-                "gpg_key_fingerprint": "",
-                "has_gpg_key": False,
-                "status": "no_key",
-                "note": "Contact has no linked PGP key — nothing to clear.",
+                "reason": (
+                    f"'{key}' is the {role} identity — its key is fixed at setup "
+                    f"and cannot be cleared via the tool surface. Removing it is "
+                    f"an owner action (re-setup / owner-facing CLI)."
+                ),
             }
 
-        if cleaned != current.upper():
-            raise ValueError(
-                f"Fingerprint mismatch: '{cleaned}' does not match the currently linked "
-                f"fingerprint '{current}' for '{key}'. Refused — clearing the wrong key "
-                f"is how a valid fingerprint gets destroyed. Read the current fingerprint "
-                f"via contact_get and pass it unchanged."
-            )
+        current = self._data[key].get("gpg_key_fingerprint", "")
 
-        if self._own_gpg_key_id and cleaned == self._own_gpg_key_id.upper():
-            raise ValueError(
-                f"Refusing to clear fingerprint '{cleaned}': it is the agent's own "
-                f"configured key (GPG_KEY_ID). That key is the agent's encryption "
-                f"identity and must stay linked."
-            )
+        if not current or fingerprint.replace(" ", "").upper() != current.upper():
+            return self._no_match(name_or_email, fingerprint)
 
+        cleaned = fingerprint.replace(" ", "").upper()
         now = datetime.now().isoformat()
         # Provenance: key_source="cleared" + key_cleared_at stamped; the
-        # original key_linked_at is kept as history of when the key was linked.
+        # original key_linked_at stays as history of when the key was linked.
         self._data[key].pop("gpg_key_fingerprint", None)
         self._data[key]["key_source"] = SOURCE_CLEARED
         self._data[key]["key_cleared_at"] = now
@@ -410,12 +460,14 @@ class ContactBook:
         key = self._normalize(name_or_email)
         if key is None:
             raise ValueError(f"Contact not found: {name_or_email}")
+        self._raise_if_identity(key)
         del self._data[key]
         self._save()
 
 
 __all__ = [
     "ContactBook",
+    "IdentityGuardError",
     "SOURCE_KEYRING_MATCH",
     "SOURCE_MANUAL",
     "SOURCE_CLEARED",

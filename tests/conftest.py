@@ -8,6 +8,7 @@ import pytest
 # Fake secrets for every test — never hits os.environ; no .env file needed.
 _ENV_OVERRIDES = {
     "EMAIL_ADDRESS": "agent@example.com",
+    "OWNER_EMAIL": "owner@example.com",
     "EMAIL_PASSWORD": "fake-app-password",
     "GPG_KEY_ID": "AAAA" * 10,
     "GPG_PASSPHRASE": "fake-passphrase",

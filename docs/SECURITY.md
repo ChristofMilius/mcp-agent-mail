@@ -54,12 +54,26 @@ Reliability first; secrecy is a stricter consequence of the same rule.
   rejected everywhere (Evil32 collision attack).
 - `contact_link_key` matches by exact UID email and **refuses** when multiple
   keys match an address — the model must resolve with a full fingerprint.
-- `contact_clear_key` refuses to clear unless the caller passes the contact's
-  **current linked fingerprint unchanged** (from `contact_get`), and refuses
-  outright to clear the agent's own key. Clearing the wrong record fails.
+- `contact_clear_key` is **pair-matched**: it clears only when the caller's
+  `(name, fingerprint)` matches a contact and its **current linked
+  fingerprint** verbatim. Any unknown name, keyless contact, or wrong
+  fingerprint returns the same `no_match` result (echoing caller input only,
+  no enumeration) and changes nothing. Identity entries return `protected`.
 - Contact records track provenance: `key_source`, `key_linked_at`, and
   `key_cleared_at` (set when a key is deliberately removed). The only key
   identifier stored is the full 40-char `gpg_key_fingerprint`.
+
+### 6. Identity entries are immutable
+
+- The agent (`EMAIL_ADDRESS`) and the owner (`OWNER_EMAIL`) each have
+  exactly one contact entry, **provisioned at setup, never by a tool**.
+- `contact_add`, `contact_remove`, `contact_link_key`,
+  `contact_set_fingerprint`, and `contact_clear_key` refuse to touch either
+  entry and return a readable `protected` outcome instead of an exception.
+- Server startup is fail-fast: it aborts if an identity email is absent or
+  held by more than one record, with `doctor`/`setup` listing the problems.
+- A book built *without* identity config keeps the historical behavior —
+  the guards are inert, never half-on.
 
 ### 5. Error boundaries
 
@@ -76,6 +90,7 @@ Reliability first; secrecy is a stricter consequence of the same rule.
 | gpg subprocess | `--batch`, `--no-autostart`, `--pinentry-mode loopback`; passphrase via stdin; GPG_HOME chmod 0o700 |
 | Key import | Structural marker validation in Python before gnupg runs; private-key markers rejected |
 | Secret files `.env` | Documented as plaintext; M2 credential-store backends |
+| Contact book | Identity entries tool-immutable; stale-fingerprint and clear-key pair-match refuse silently in a way that reveals no enumeration |
 | Log files | Rotating, DEBUG-only server-side; do not put on shared volumes |
 | Archive file | Plaintext JSONL by design (the agent's own mail store); point `ARCHIVE_PATH` at an encrypted volume for at-rest encryption |
 | Public key files | Exported `0o644` — public by definition |
@@ -98,8 +113,11 @@ Reliability first; secrecy is a stricter consequence of the same rule.
 1. Generate a **dedicated agent keypair**; use its fingerprint in
    `GPG_KEY_ID`.
 2. Use a Gmail **app password**, never the account password.
-3. Run with `SECRET_BACKEND=env` only on a machine whose disk you trust.
-4. Keep `data/`, `logs/`, `exported_keys/` out of version control
+3. Provision the identity entries in `data/contacts.json` — one record each
+   for `EMAIL_ADDRESS` (surname style `agent of <owner>`) and `OWNER_EMAIL`.
+   This is a setup step, not a tool action; `setup`/`doctor` verify it.
+4. Run with `SECRET_BACKEND=env` only on a machine whose disk you trust.
+5. Keep `data/`, `logs/`, `exported_keys/` out of version control
    (`.gitignore` does this).
-5. For M2: move passphrase & app password into a credential store and switch
+6. For M2: move passphrase & app password into a credential store and switch
    `SECRET_BACKEND`. The model-facing behavior does not change.

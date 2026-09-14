@@ -1,14 +1,22 @@
 """tests/test_server.py — server assembly, logging, AppContext."""
 from __future__ import annotations
 
+import json
 import types
+from pathlib import Path
 
 import mcp.server.mcpserver
 import pytest
 
+from mcp_agent_mail.contacts import ContactBook
 from mcp_agent_mail.context import AppContext
 from mcp_agent_mail.logging_setup import setup_logging
-from mcp_agent_mail.server import INSTRUCTIONS, SERVER_NAME, create_server
+from mcp_agent_mail.server import (
+    INSTRUCTIONS,
+    SERVER_NAME,
+    create_server,
+    validate_identity_entries,
+)
 
 
 def _fake_ctx(tmp_project):
@@ -65,3 +73,103 @@ class TestAppContext:
         ctx = _fake_ctx(tmp_project)
         with pytest.raises(Exception):
             ctx.cfg = None
+
+
+def _seed_identity_book(path, *, extra=None):
+    """Provision a well-formed book with agent + owner identity entries."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    base = "2026-09-13T00:00:00"
+
+    def rec(given, surname, email, fp):
+        return {
+            "added": base,
+            "given_name": given,
+            "surname": surname,
+            "email": email,
+            "gpg_key_fingerprint": fp,
+            "key_source": "keyring_uid_match",
+            "key_linked_at": base,
+            "key_cleared_at": "",
+            "notes": "",
+            "updated": base,
+        }
+
+    data = {
+        "Hermes the Agent": rec("Hermes", "agent of Chris", "agent@example.com", "A" * 40),
+        "Chris Example": rec("Chris", "Example", "owner@example.com", "B" * 40),
+    }
+    if extra:
+        data.update(extra)
+    Path(path).write_text(json.dumps(data), encoding="utf-8")
+
+
+class TestIdentityValidation:
+    def _cfg(self, root, env, *, email_address="agent@example.com",
+             owner_email="owner@example.com"):
+        return types.SimpleNamespace(
+            contacts_path=env["CONTACTS_PATH"],
+            email_address=email_address,
+            owner_email=owner_email,
+        )
+
+    def test_healthy_setup_reports_no_problems(self, tmp_project):
+        root, env = tmp_project
+        _seed_identity_book(env["CONTACTS_PATH"])
+        cfg = self._cfg(root, env)
+        assert validate_identity_entries(cfg, ContactBook(cfg)) == []
+
+    def test_missing_agent_entry(self, tmp_project):
+        root, env = tmp_project
+        # Overwrite the file with ONLY the owner entry — no agent record at all.
+        path = Path(env["CONTACTS_PATH"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "Chris Example": {
+                "added": "2026-09-13T00:00:00",
+                "given_name": "Chris",
+                "surname": "Example",
+                "email": "owner@example.com",
+                "gpg_key_fingerprint": "B" * 40,
+                "key_source": "keyring_uid_match",
+                "key_linked_at": "2026-09-13T00:00:00",
+                "key_cleared_at": "",
+                "notes": "",
+                "updated": "2026-09-13T00:00:00",
+            }
+        }), encoding="utf-8")
+        cfg = self._cfg(root, env)
+        problems = validate_identity_entries(cfg, ContactBook(cfg))
+        assert any("agent" in p and "no contact entry" in p for p in problems)
+        assert not any("owner" in p for p in problems)
+
+    def test_duplicate_owner_entry(self, tmp_project):
+        root, env = tmp_project
+        dup = {
+            "Chris Doppel": {
+                "added": "2026-09-13T00:00:00",
+                "given_name": "Chris",
+                "surname": "Doppel",
+                "email": "owner@example.com",
+                "gpg_key_fingerprint": "",
+                "key_source": "",
+                "key_linked_at": "",
+                "key_cleared_at": "",
+                "notes": "",
+                "updated": "2026-09-13T00:00:00",
+            }
+        }
+        _seed_identity_book(env["CONTACTS_PATH"], extra=dup)
+        problems = validate_identity_entries(self._cfg(root, env), ContactBook(self._cfg(root, env)))
+        assert any("owner" in p and "exactly one" in p for p in problems)
+        assert not any("agent" in p for p in problems)
+
+    def test_unconfigured_emails_are_skipped(self, tmp_project):
+        root, env = tmp_project
+        cfg = self._cfg(root, env, email_address="", owner_email="")
+        assert validate_identity_entries(cfg, ContactBook(cfg)) == []
+
+    def test_matching_is_case_insensitive(self, tmp_project):
+        root, env = tmp_project
+        _seed_identity_book(env["CONTACTS_PATH"])
+        cfg = self._cfg(root, env, owner_email="OWNER@Example.COM")
+        assert validate_identity_entries(cfg, ContactBook(cfg)) == []

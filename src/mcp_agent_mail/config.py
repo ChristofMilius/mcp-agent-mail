@@ -48,10 +48,11 @@ _BASE = Path(__file__).resolve().parent.parent.parent
 if load_dotenv is not None:
     load_dotenv(_BASE / ".env")
 
-# Required secrets. When require_secrets=True every one of these must resolve
-# to a non-empty value or construction aborts.
+# Required secrets and identity values. When require_secrets=True every one
+# of these must resolve to a non-empty value or construction aborts.
 REQUIRED_SECRETS = (
-    "EMAIL_ADDRESS",      # account email — the To:/From: identity
+    "EMAIL_ADDRESS",      # agent account email — the To:/From: identity
+    "OWNER_EMAIL",        # owner (human) email — the second identity entry
     "EMAIL_PASSWORD",     # IMAP/SMTP app password
     "GPG_KEY_ID",         # agent key, used for signing + decryption
     "GPG_PASSPHRASE",     # passphrase for the agent secret key
@@ -115,6 +116,7 @@ class Config:
         # ------------------------------------------------------------------
         self.email_address: str = os.getenv("EMAIL_ADDRESS", "")
         self.email_display_name: str = os.getenv("EMAIL_DISPLAY_NAME", "AI Agent")
+        self.owner_email: str = os.getenv("OWNER_EMAIL", "")
 
         # ------------------------------------------------------------------
         # Secrets — resolved through the configured provider
@@ -163,6 +165,8 @@ class Config:
         for name in REQUIRED_SECRETS:
             if name == "EMAIL_ADDRESS":
                 ok = bool(self.email_address)
+            elif name == "OWNER_EMAIL":
+                ok = bool(self.owner_email)
             elif name == "GPG_KEY_ID":
                 ok = bool(self.gpg_key_id)
             elif name == "EMAIL_PASSWORD":

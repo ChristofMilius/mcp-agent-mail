@@ -32,8 +32,69 @@ def _cmd_serve(args) -> int:
     return 0
 
 
+def _identity_report(cfg, contacts) -> tuple[list[str], bool]:
+    """
+    Build the identity diagnostics block.
+
+    Covers: agent (EMAIL_ADDRESS) and owner (OWNER_EMAIL) each having exactly
+    one contact entry, the agent entry's fingerprint matching GPG_KEY_ID, and
+    legacy records still missing a surname. Returns (lines, healthy).
+    """
+    from mcp_agent_mail.server import validate_identity_entries
+
+    lines: list[str] = []
+    ok = True
+
+    if not cfg.owner_email and not cfg.email_address:
+        lines.append("    [!!] neither EMAIL_ADDRESS nor OWNER_EMAIL is set — identity cannot be checked")
+        ok = False
+    elif not cfg.owner_email:
+        lines.append(
+            "    [!!] OWNER_EMAIL is not set — the owner identity entry cannot be checked (see .env.example)"
+        )
+        ok = False
+
+    for problem in validate_identity_entries(cfg, contacts):
+        lines.append(f"    [!!] {problem}")
+        ok = False
+
+    for email, label in ((cfg.email_address, "agent"), (cfg.owner_email, "owner")):
+        if not email:
+            continue
+        holders = [
+            c["name"]
+            for c in contacts.list_all()
+            if c.get("email", "").strip().lower() == email.strip().lower()
+        ]
+        if len(holders) != 1:
+            continue  # already reported above
+        name = holders[0]
+        rec = contacts.get(name) or {}
+        if label == "agent" and cfg.gpg_key_id:
+            linked = rec.get("gpg_key_fingerprint", "").upper()
+            if linked == cfg.gpg_key_id.upper():
+                lines.append(f"    [ok] agent {name}: fingerprint matches GPG_KEY_ID")
+            else:
+                lines.append(
+                    f"    [!!] agent {name}: fingerprint does NOT match GPG_KEY_ID "
+                    f"— the agent's book entry must carry the configured key"
+                )
+                ok = False
+
+    unset = sorted(
+        c["name"] for c in contacts.list_all() if not c.get("surname")
+    )
+    if unset:
+        lines.append(
+            f"    [..] {len(unset)} contact(s) missing a surname (setup step): {', '.join(unset)}"
+        )
+
+    return lines, ok
+
+
 def _cmd_setup(args) -> int:
     from mcp_agent_mail.config import Config, ConfigError
+    from mcp_agent_mail.contacts import ContactBook
     from mcp_agent_mail.crypto import GPGCrypto
 
     print(f"mcp-agent-mail {__version__} — setup check\n")
@@ -64,14 +125,31 @@ def _cmd_setup(args) -> int:
         except Exception as e:
             print(f"\n  [gpg] could not inspect keyring: {type(e).__name__}")
 
+    ok = True
+    print("\n  Identity:")
+    try:
+        contacts = ContactBook(cfg)
+        id_lines, id_ok = _identity_report(cfg, contacts)
+        ok = id_ok
+        if id_lines:
+            for line in id_lines:
+                print(line)
+        else:
+            print("    [ok] agent and owner identity entries present, uniquely held")
+    except Exception as e:
+        print(f"    [!!] identity check failed: {type(e).__name__}")
+        ok = False
+
     print(
         "\nNext steps:\n"
         "  1. Put required values in .env (see .env.example).\n"
         "  2. Store the GPG passphrase in your credential manager (M2 backends)\n"
         "     or set SECRET_BACKEND=env for local development.\n"
-        "  3. Run `mcp-agent-mail doctor` to verify, then `mcp-agent-mail` to serve."
+        "  3. Provision the identity entries (owner contact + agent entry)\n"
+        "     before serving — identity is a setup step, not a model action.\n"
+        "  4. Run `mcp-agent-mail doctor` to verify, then `mcp-agent-mail` to serve."
     )
-    return 0
+    return 0 if ok else 1
 
 
 def _cmd_doctor(args) -> int:
@@ -97,6 +175,7 @@ def _cmd_doctor(args) -> int:
         ok = ok and present
 
     print(f"\n  account  : {cfg.email_address}")
+    print(f"  owner    : {cfg.owner_email}")
     print(f"  backend  : {cfg.secret_backend}")
     print(f"  contacts : {cfg.contacts_path}")
     print(f"  archive  : {cfg.archive_path}")
@@ -110,13 +189,33 @@ def _cmd_doctor(args) -> int:
         if line.endswith("MISSING"):
             ok = False
 
+    from mcp_agent_mail.contacts import ContactBook
+
+    print("\n  Identity:")
+    try:
+        local_contacts = ContactBook(cfg)
+        id_lines, id_ok = _identity_report(cfg, local_contacts)
+        ok = ok and id_ok
+        if id_lines:
+            for line in id_lines:
+                print(line)
+        else:
+            print("    [ok] agent and owner identity entries present, uniquely held")
+    except Exception as e:
+        print(f"    [!!] identity check failed: {type(e).__name__}")
+        ok = False
+
     if not args.live:
         print("\nOffline checks only. Re-run with --live to test IMAP/SMTP/decrypt.")
         return 0 if ok else 1
 
     from mcp_agent_mail.server import build_context
 
-    ctx = build_context(require_secrets=True)
+    try:
+        ctx = build_context(require_secrets=True)
+    except ConfigError as e:
+        print(f"\n  [!!] identity/config problem: {e}")
+        return 1
     print("\n  Live checks:")
 
     try:

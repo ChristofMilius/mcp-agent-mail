@@ -11,6 +11,7 @@ from mcp_agent_mail.contacts import (
     SOURCE_KEYRING_MATCH,
     SOURCE_MANUAL,
     ContactBook,
+    IdentityGuardError,
     _uid_email,
 )
 
@@ -20,6 +21,52 @@ FPR40 = "AABBCCDDEEFF00112233445566778899AABBCCDD"
 def make_book(tmp_project):
     root, env = tmp_project
     cfg = types.SimpleNamespace(contacts_path=env["CONTACTS_PATH"])
+    return ContactBook(cfg)
+
+
+def _seed_identity_book(path, *, agent_fp=FPR40, owner_fp="00" * 20):
+    """Provision a well-formed book holding agent + owner identity entries."""
+    from pathlib import Path
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    base = "2026-09-13T00:00:00"
+    owner_name = "Chris Example"
+
+    def rec(given, surname, email, fp, source):
+        return {
+            "added": base,
+            "given_name": given,
+            "surname": surname,
+            "email": email,
+            "gpg_key_fingerprint": fp,
+            "key_source": source,
+            "key_linked_at": base,
+            "key_cleared_at": "",
+            "notes": "",
+            "updated": base,
+        }
+
+    data = {
+        "Hermes the Agent": rec(
+            "Hermes", f"agent of {owner_name}", "agent@example.com",
+            agent_fp, SOURCE_KEYRING_MATCH,
+        ),
+        owner_name: rec(
+            "Chris", "Example", "owner@example.com", owner_fp, SOURCE_KEYRING_MATCH,
+        ),
+    }
+    Path(path).write_text(json.dumps(data), encoding="utf-8")
+
+
+def make_identity_book(tmp_project):
+    """ContactBook whose cfg declares agent + owner identities (seeded)."""
+    root, env = tmp_project
+    _seed_identity_book(env["CONTACTS_PATH"])
+    cfg = types.SimpleNamespace(
+        contacts_path=env["CONTACTS_PATH"],
+        email_address="agent@example.com",
+        owner_email="owner@example.com",
+    )
     return ContactBook(cfg)
 
 
@@ -265,44 +312,113 @@ class TestClearKey:
         assert r["status"] == "cleared"
         assert r["cleared_fingerprint"] == FPR40
 
-    def test_mismatch_is_refused(self, tmp_project):
+    def test_mismatch_is_no_match_no_state_change(self, tmp_project):
         book = make_book(tmp_project)
         book.add("Alice", "Example", "alice@example.com")
         book.set_fingerprint("Alice Example", FPR40)
-        other = "00" * 20
-        with pytest.raises(ValueError, match="does not match"):
-            book.clear_key("Alice Example", other)
+        linked_at = book.get("Alice Example")["key_linked_at"]
+        wrong = "00" * 20
+        r = book.clear_key("Alice Example", wrong)
+        assert r["status"] == "no_match"
+        assert r["reason"] == f"could not find a matching pair, (Alice Example, {wrong})"
+        assert book.get("Alice Example")["has_gpg_key"] is True
+        assert book.get("Alice Example")["key_linked_at"] == linked_at
 
-    def test_no_key_is_noop_not_error(self, tmp_project):
+    def test_no_key_is_no_match_not_error(self, tmp_project):
         book = make_book(tmp_project)
         book.add("Alice", "Example", "alice@example.com")
         r = book.clear_key("Alice Example", FPR40)
-        assert r["status"] == "no_key"
-        assert r["has_gpg_key"] is False
+        assert r["status"] == "no_match"
+        assert r["reason"] == f"could not find a matching pair, (Alice Example, {FPR40})"
 
-    def test_rejects_garbage_fingerprint(self, tmp_project):
+    def test_garbage_fingerprint_is_no_match_not_error(self, tmp_project):
         book = make_book(tmp_project)
         book.add("Alice", "Example", "alice@example.com")
-        with pytest.raises(ValueError, match="40 hex"):
-            book.clear_key("Alice Example", "AABB")
+        book.set_fingerprint("Alice Example", FPR40)
+        r = book.clear_key("Alice Example", "AABB")
+        assert r["status"] == "no_match"
+        assert book.get("Alice Example")["has_gpg_key"] is True
 
-    def test_refuses_clearing_own_key(self, tmp_project):
-        root, env = tmp_project
-        cfg = types.SimpleNamespace(
-            contacts_path=env["CONTACTS_PATH"], gpg_key_id=FPR40
-        )
-        book = ContactBook(cfg)
+    def test_unknown_contact_is_no_match_not_error(self, tmp_project):
+        book = make_book(tmp_project)
+        stale = "A" * 40
+        r = book.clear_key("Ghost Person", stale)
+        assert r["status"] == "no_match"
+        assert r["reason"] == f"could not find a matching pair, (Ghost Person, {stale})"
+
+    def test_right_fingerprint_under_wrong_name_is_no_match(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice", "Example", "alice@example.com")
+        book.set_fingerprint("Alice Example", FPR40)
+        r = book.clear_key("Bob Nobody", FPR40)
+        assert r["status"] == "no_match"
+        assert book.get("Alice Example")["has_gpg_key"] is True
+
+
+class TestIdentity:
+    def test_clear_key_protects_agent(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        r = book.clear_key("Hermes the Agent", FPR40)
+        assert r["status"] == "protected"
+        assert r["identity"] == "agent"
+        assert book.get("Hermes the Agent")["gpg_key_fingerprint"] == FPR40
+
+    def test_clear_key_protects_owner(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        r = book.clear_key("Chris Example", "00" * 20)
+        assert r["status"] == "protected"
+        assert r["identity"] == "owner"
+
+    def test_clear_key_protects_even_with_wrong_fingerprint(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        r = book.clear_key("Hermes the Agent", "AB" * 20)
+        assert r["status"] == "protected"
+
+    def test_remove_refuses_identity(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        with pytest.raises(IdentityGuardError) as ei:
+            book.remove("Hermes the Agent")
+        assert ei.value.role == "agent"
+        with pytest.raises(IdentityGuardError) as ei:
+            book.remove("Chris Example")
+        assert ei.value.role == "owner"
+
+    def test_set_fingerprint_refuses_identity(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        with pytest.raises(IdentityGuardError):
+            book.set_fingerprint("Hermes the Agent", "11" * 20)
+
+    def test_link_key_refuses_identity(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        crypto = _FakeCrypto([
+            {"fingerprint": "11" * 20, "uids": ["Hermes <agent@example.com>"], "keyid": "11111111"},
+        ])
+        with pytest.raises(IdentityGuardError):
+            book.find_and_link_key("Hermes the Agent", crypto)
+
+    def test_add_refuses_identity_emails(self, tmp_project):
+        book = make_identity_book(tmp_project)
+        with pytest.raises(IdentityGuardError):
+            book.add("Rogue", "Agent", "agent@example.com")
+        with pytest.raises(IdentityGuardError):
+            book.add("Rogue", "Owner", "owner@example.com")
+        assert set(book._data) == {"Hermes the Agent", "Chris Example"}
+
+    def test_identity_email_cannot_be_created_by_tool(self, tmp_project):
+        # Even a book MISSING the agent entry refuses to create one via add():
+        # provisioning an identity is a setup step, not a model action.
+        book = make_identity_book(tmp_project)
+        del book._data["Hermes the Agent"]
+        with pytest.raises(IdentityGuardError):
+            book.add("Hermes", "the Agent", "agent@example.com")
+
+    def test_guards_inert_without_identity_config(self, tmp_project):
+        # Books built without identity emails keep the old behavior entirely.
+        book = make_book(tmp_project)
         book.add("Hermes", "the Agent", "agent@example.com")
         book.set_fingerprint("Hermes the Agent", FPR40)
-        with pytest.raises(ValueError, match="own configured key"):
-            book.clear_key("Hermes the Agent", FPR40)
-        # Guard must not block clearing contacts with OTHER keys.
-        book.add("Alice", "Example", "alice@example.com")
-        other = "00" * 20
-        book.set_fingerprint("Alice Example", other)
-        assert book.clear_key("Alice Example", other)["status"] == "cleared"
-
-    def test_unknown_contact_raises(self, tmp_project):
-        book = make_book(tmp_project)
-        with pytest.raises(ValueError, match="not found"):
-            book.clear_key("Ghost Person", "A" * 40)
+        other = "77" * 20
+        book.set_fingerprint("Hermes the Agent", other)
+        assert book.clear_key("Hermes the Agent", other)["status"] == "cleared"
+        book.remove("Hermes the Agent")
+        assert book.get("Hermes the Agent") is None

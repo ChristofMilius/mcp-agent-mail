@@ -19,7 +19,7 @@ from mcp.server.mcpserver import MCPServer
 
 from mcp_agent_mail import __version__
 from mcp_agent_mail.archive import EmailArchive
-from mcp_agent_mail.config import Config
+from mcp_agent_mail.config import Config, ConfigError
 from mcp_agent_mail.contacts import ContactBook
 from mcp_agent_mail.context import AppContext
 from mcp_agent_mail.crypto import GPGCrypto
@@ -48,6 +48,35 @@ Security model:
 """.strip()
 
 
+def validate_identity_entries(cfg, contacts) -> list[str]:
+    """
+    Check the identity setup: the agent (EMAIL_ADDRESS) and the owner
+    (OWNER_EMAIL) each need exactly one contact entry holding their email.
+    Returns a list of human-readable problems (empty = healthy).
+    """
+    problems: list[str] = []
+    for email, label in ((cfg.email_address, "agent"), (cfg.owner_email, "owner")):
+        if not email:
+            continue
+        wanted = email.strip().lower()
+        holders = [
+            c["name"]
+            for c in contacts.list_all()
+            if c.get("email", "").strip().lower() == wanted
+        ]
+        if not holders:
+            problems.append(
+                f"identity '{label}' ({email}) has no contact entry — "
+                f"it must be provisioned during setup"
+            )
+        elif len(holders) > 1:
+            problems.append(
+                f"identity '{label}' ({email}) has {len(holders)} entries "
+                f"({', '.join(sorted(holders))}) — exactly one is required"
+            )
+    return problems
+
+
 def build_context(require_secrets: bool = True) -> AppContext:
     """
     Construct the full application object graph.
@@ -63,6 +92,17 @@ def build_context(require_secrets: bool = True) -> AppContext:
     contacts = ContactBook(cfg)
     archive = EmailArchive(cfg)
     email_client = EmailClient(cfg, crypto, contacts, archive=archive)
+
+    if require_secrets:
+        identity_problems = validate_identity_entries(cfg, contacts)
+        if identity_problems:
+            raise ConfigError(
+                "Identity setup incomplete — the server will not run half-configured:\n"
+                "  - " + "\n  - ".join(identity_problems) + "\n"
+                "Identity is a setup step: the agent (EMAIL_ADDRESS) and the owner "
+                "(OWNER_EMAIL) each need exactly one contact entry. See README "
+                "'Identity & setup'."
+            )
 
     return AppContext(
         cfg=cfg,
@@ -100,4 +140,4 @@ def run(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000) -> 
         server.run(transport=transport, host=host, port=port)
 
 
-__all__ = ["SERVER_NAME", "build_context", "create_server", "run"]
+__all__ = ["SERVER_NAME", "build_context", "create_server", "run", "validate_identity_entries"]

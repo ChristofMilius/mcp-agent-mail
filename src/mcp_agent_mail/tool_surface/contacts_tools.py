@@ -12,8 +12,22 @@ from __future__ import annotations
 
 import json
 
-from mcp_agent_mail.contacts import ContactBook
+from mcp_agent_mail.contacts import ContactBook, IdentityGuardError
 from mcp_agent_mail.errors import tool_error
+
+
+def _protected_json(e: IdentityGuardError) -> str:
+    """Identity entries are immutable from the tool surface — readable refusal."""
+    return json.dumps(
+        {
+            "status": "protected",
+            "identity": e.role,
+            "query": e.name,
+            "reason": str(e),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 def register(server, ctx) -> None:
@@ -80,6 +94,8 @@ def register(server, ctx) -> None:
         try:
             result = contacts.find_and_link_key(name_or_email, ctx.crypto)
             return json.dumps(result, indent=2, ensure_ascii=False)
+        except IdentityGuardError as e:
+            return _protected_json(e)
         except Exception as e:
             return tool_error("contact_link_key", e)
 
@@ -97,19 +113,24 @@ def register(server, ctx) -> None:
         try:
             result = contacts.set_fingerprint(name_or_email, fingerprint)
             return json.dumps(result, indent=2, ensure_ascii=False)
+        except IdentityGuardError as e:
+            return _protected_json(e)
         except Exception as e:
             return tool_error("contact_set_fingerprint", e)
 
     @server.tool()
     def contact_clear_key(name_or_email: str, fingerprint: str) -> str:
-        """Deliberately remove a contact's linked PGP fingerprint.
+        """Deliberately remove a contact's linked PGP fingerprint (pair-matched).
 
-        FOOLPROOF against accidental clears of valid fingerprints:
-          - fingerprint MUST exactly match the contact's CURRENTLY linked
-            fingerprint — read it via contact_get first, pass it unchanged.
-          - A mismatch is refused to prevent destroying a valid key.
-          - The agent's own key can never be cleared.
-          - Contacts with no linked key are a no-op, not an error.
+        Deterministic and foolproof — the (name, fingerprint) pair must match
+        the book exactly, otherwise nothing changes:
+          - status='cleared': pair matched, key removed with provenance.
+          - status='no_match': unknown name, keyless contact, or wrong
+            fingerprint — same refusal either way, nothing changed.
+          - status='protected': the name is the agent/owner identity entry;
+            its key is fixed at setup and immune to tool changes.
+
+        Read the CURRENT fingerprint via contact_get and pass it unchanged.
 
         Args:
             name_or_email: Contact name or email address.
@@ -131,6 +152,8 @@ def register(server, ctx) -> None:
         try:
             contacts.remove(name_or_email)
             return json.dumps({"status": "removed", "query": name_or_email})
+        except IdentityGuardError as e:
+            return _protected_json(e)
         except Exception as e:
             return tool_error("contact_remove", e)
 
