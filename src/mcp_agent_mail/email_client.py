@@ -4,11 +4,13 @@ email_client.py — IMAP/SMTP + automatic inbound PGP interception
 Two responsibilities:
 
   1. Move mail: IMAP for reading, SMTP for sending.
-  2. Run KeyBlockStore on every inbound plaintext body, before it reaches
-     the tool surface. Any `-----BEGIN PGP PUBLIC KEY BLOCK-----` found in
-     an incoming message is imported into the keyring AND linked to the
-     sender's contact record automatically. The model never sees the key
-     block; by the time `email_read` returns, the body has been stripped.
+  2. Run KeyBlockStore on every inbound *decrypted* plaintext body, before
+     it reaches the tool surface. Any `-----BEGIN PGP PUBLIC KEY BLOCK-----`
+     found in an incoming message (including one inside an encrypted
+     message) is imported into the keyring AND linked to the sender's
+     contact record automatically. Autocrypt `keydata=` values are masked.
+     The model never sees the key material; by the time `email_read`
+     returns, the body has been stripped.
 
 Security invariants:
   - Outbound gate: encrypt=True with no recipient fingerprint REFUSES to
@@ -58,6 +60,13 @@ _PUBKEY_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+# Autocrypt header carrying an armored public key. Value may be folded across
+# continuation lines (RFC 5322 header folding, leading whitespace). The whole
+# keydata= value plus its continuations is redacted, nothing else.
+_AUTOCRYPT_RE = re.compile(
+    r"(?im)^(autocrypt:[^\r\n]*keydata=)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*",
+)
+
 
 def _decode(value: str | None) -> str:
     """Decode an RFC 2047-encoded header value into a plain string."""
@@ -84,15 +93,26 @@ def _cap(value: str, limit: int = _HEADER_CAP) -> str:
     return value[:limit] + f"… [truncated, {len(value)} chars total]"
 
 
+def _mask_autocrypt(text: str) -> str:
+    """
+    Redact Autocrypt header keydata (and its folded continuation lines) so
+    public-key material never lands in bodies or the archive.
+    """
+    if not text or "keydata=" not in text:
+        return text
+    return _AUTOCRYPT_RE.sub(r"\1[redacted]", text)
+
+
 class KeyBlockStore:
     """
     Inbound PGP public-key interceptor.
 
-    Runs on every plaintext inbound body before the tool surface sees it.
-    For each PGP public key block found:
+    Runs on the final (decrypted) plaintext body before the tool surface
+    sees it. For each PGP public key block found:
       1. import into the keyring (crypto.import_key)
       2. link the full fingerprint to the sender's contact (if known)
-      3. record provenance (key_source='auto-intercepted')
+      3. record provenance (key_source='auto-intercepted') unless one of
+         the authoritative sources (manual / keyring_uid_match) exists
     The block is then removed from the body.
     """
 
@@ -169,7 +189,10 @@ class KeyBlockStore:
                 continue
             if any(_uid_email(uid) == sender_email for uid in k.get("uids", [])):
                 self.contacts.set_fingerprint(contact["name"], fingerprint)
-                self.contacts._data[contact["name"]]["key_source"] = self.SOURCE
+                # Only stamp auto-intercepted provenance when the record has none
+                # yet. Never overwrite authoritative sources (manual / keyring_uid_match).
+                if not self.contacts._data[contact["name"]].get("key_source"):
+                    self.contacts._data[contact["name"]]["key_source"] = self.SOURCE
                 self.contacts._save()
                 return True
         return False
@@ -182,6 +205,20 @@ class EmailClient:
         self.contacts = contacts
         self.archive = archive
         self.key_blocks = KeyBlockStore(cfg, crypto, contacts)
+
+    def _prepare_body(self, plain: str, msg, sender: str):
+        """
+        Turn an extracted body into its final read/archive form.
+
+        Order matters: decrypt FIRST, then run key interception on the
+        *decrypted* plaintext so public-key blocks living inside an encrypted
+        message are stripped too, then mask Autocrypt keydata. Returns
+        (plain, key_results, gpg_status, gpg_source, decrypt_failed).
+        """
+        plain, gpg_status, gpg_source, decrypt_failed = self._decrypt_pgp(plain, msg)
+        plain, key_results = self.key_blocks.process(plain, sender)
+        plain = _mask_autocrypt(plain)
+        return plain, key_results, gpg_status, gpg_source, decrypt_failed
 
     # ------------------------------------------------------------------
     # IMAP
@@ -246,9 +283,10 @@ class EmailClient:
 
     def read_email(self, uid: str, folder: str = "INBOX") -> dict:
         """
-        Fetch and decode one email by uid. Runs inbound PGP interception,
-        auto-decrypts PGP bodies, archives the result, and caps the returned
-        body at BODY_CAP characters with an archive notice.
+        Fetch and decode one email by uid. Auto-decrypts PGP bodies, runs
+        inbound PGP interception on the decrypted plaintext, archives the
+        result, and caps the returned body at BODY_CAP characters with an
+        archive notice.
         """
         uid = str(uid)
         conn = self._imap_connect()
@@ -271,10 +309,12 @@ class EmailClient:
 
             plain, attachments = self._extract_body(msg)
 
-            # Inbound PGP interception BEFORE returning/storing.
-            plain, key_results = self.key_blocks.process(plain, sender)
-
-            plain, gpg_status, gpg_source, decrypt_failed = self._decrypt_pgp(plain, msg)
+            # Decrypt first, then intercept key blocks on the final
+            # plaintext so embedded blocks are stripped too, then mask
+            # Autocrypt keydata. Never run interception on ciphertext.
+            plain, key_results, gpg_status, gpg_source, decrypt_failed = self._prepare_body(
+                plain, msg, sender
+            )
 
             full_body = plain
             body = full_body

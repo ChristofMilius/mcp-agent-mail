@@ -13,6 +13,7 @@ from mcp_agent_mail.email_client import (
     KeyBlockStore,
     _cap,
     _decode,
+    _mask_autocrypt,
 )
 from mcp_agent_mail.secrets import SecretString
 
@@ -273,6 +274,118 @@ class TestKeyBlockStore:
         cleaned, results = kbs.process(bad, "alice@example.com")
         assert crypto.imported == []
         assert cleaned == bad  # private blocks are not matched/stripped
+
+    def test_blank_key_source_stamped_auto_intercepted(self):
+        cfg = object()
+        crypto = _ImportCrypto()
+        crypto.keys = [
+            {"fingerprint": FPR40, "uids": ["Alice Example <alice@example.com>"]}
+        ]
+        contacts = _Contacts()
+        contacts.add("Alice Example", "alice@example.com")
+        kbs = KeyBlockStore(cfg, crypto, contacts)
+        kbs.process(BLOCK, "alice@example.com")
+        assert contacts._data["Alice Example"]["fp"] == FPR40
+        assert contacts._data["Alice Example"].get("key_source") == "auto-intercepted"
+
+    def test_existing_key_source_not_overwritten(self):
+        cfg = object()
+        crypto = _ImportCrypto()
+        crypto.keys = [
+            {"fingerprint": FPR40, "uids": ["Alice Example <alice@example.com>"]}
+        ]
+        contacts = _Contacts()
+        contacts.add("Alice Example", "alice@example.com")
+        contacts._data["Alice Example"]["key_source"] = "keyring_uid_match"
+        kbs = KeyBlockStore(cfg, crypto, contacts)
+        kbs.process(BLOCK, "alice@example.com")
+        assert contacts._data["Alice Example"]["fp"] == FPR40
+        assert contacts._data["Alice Example"]["key_source"] == "keyring_uid_match"
+
+
+class TestAutocryptMask:
+    def test_folded_keydata_redacted(self):
+        text = (
+            "Autocrypt: addr=a@b.de; keydata=\n"
+            " xsFNB\n"
+            " abcd\n"
+            "Message-ID: <x>\n\n"
+            "Hello"
+        )
+        out = _mask_autocrypt(text)
+        assert "xsFNB" not in out
+        assert "abcd" not in out
+        assert "keydata=[redacted]" in out
+        assert "Message-ID: <x>" in out
+        assert out.endswith("Hello")
+
+    def test_single_line_keydata_redacted(self):
+        text = "Autocrypt: addr=a@b.de; keydata=xsFNBabcd\n\nHello"
+        out = _mask_autocrypt(text)
+        assert "xsFNBabcd" not in out
+        assert out == "Autocrypt: addr=a@b.de; keydata=[redacted]\n\nHello"
+
+    def test_no_keydata_passes_through(self):
+        text = "Autocrypt: addr=a@b.de\n\nHello"
+        assert _mask_autocrypt(text) == text
+
+    def test_non_autocrypt_keydata_untouched(self):
+        text = "X-Custom: keydata=keep\n\nHello"
+        assert _mask_autocrypt(text) == text
+
+
+DECRYPTED_WITH_KEY = (
+    "Autocrypt: addr=c@x.de; keydata=\n"
+    " abcd1234\n"
+    " efgh5678\n"
+    "Message-ID: <x@y>\n\n"
+    "Hallo!\n" + BLOCK + "\n"
+    "Viele Gruesse"
+)
+
+
+class TestPrepareBody:
+    def test_intercepts_key_inside_decrypted_body(self):
+        cfg = object()
+        crypto = type(
+            "C",
+            (),
+            {"decrypt": lambda self, t: DECRYPTED_WITH_KEY},
+        )()
+        import_crypto = _ImportCrypto()
+        import_crypto.keys = [
+            {"fingerprint": FPR40, "uids": ["Christof <c@x.de>"]}
+        ]
+        contacts = _Contacts()
+        contacts.add("Christof", "c@x.de")
+
+        client = EmailClient.__new__(EmailClient)
+        client.crypto = crypto
+        client.contacts = contacts
+        client.key_blocks = KeyBlockStore(cfg, import_crypto, contacts)
+        client.archive = None
+
+        plain, key_results, gpg_status, gpg_source, failed = client._prepare_body(
+            "", _attached_pgp_message(), "Christof <c@x.de>"
+        )
+
+        # Decryption happened first.
+        assert gpg_status == "decrypted"
+        assert gpg_source == "attachment"
+        assert failed is False
+
+        # The block embedded in the decrypted plaintext was imported+stripped.
+        assert len(import_crypto.imported) == 1
+        assert "-----BEGIN PGP PUBLIC KEY BLOCK-----" not in plain
+        assert "[PGP public key block intercepted and imported]" in plain
+        assert key_results[0]["status"] == "ok"
+        assert key_results[0]["contact_linked"] is True
+
+        # Normal text survives; Autocrypt keydata is masked.
+        assert "Hallo!" in plain
+        assert "Viele Gruesse" in plain
+        assert "abcd1234" not in plain
+        assert "keydata=[redacted]" in plain
 
 
 class TestOutboundGate:

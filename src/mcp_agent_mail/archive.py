@@ -9,21 +9,25 @@ Format: one JSON object per line (JSONL). One file, `data/archive.emails.jsonl`.
 What is stored:
   - uid, folder, sender, to, subject, date
   - body: the full DECRYPTED and SANITIZED body, but only AFTER inbound PGP
-    interception has run (KeyBlockStore). Bodies that failed decryption are
-    recorded with `decrypt_failed=True` and an empty body — we never archive
-    ciphertext as if it were plaintext, and never archive a half-decrypted body.
+    interception has run (KeyBlockStore) and Autocrypt keydata has been
+    masked. Bodies that failed decryption are recorded with
+    `decrypt_failed=True` and an empty body — we never archive ciphertext as
+    if it were plaintext, and never archive a half-decrypted body.
   - attachment metadata only: filename / content_type / size.
     Attachment payloads are never written here.
 
-Deduplication: by uid. `record()` is idempotent — re-reading the same email
-does not create duplicate lines. The uid is the IMAP UID (stable per folder).
+File layout: append-only JSONL. `record()` appends one line per read; a
+re-read appends a refreshed line (latest-wins) so archive_get reflects the
+newest decrypt/sanitization state. Readers resolve per-uid by newest line —
+the file itself is never rewritten in place.
 
 Security:
   - The archive is plaintext on disk. SECURITY.md documents this as a
     deliberate trade-off: it is the agent's own readable mail store, and it is
     what makes `email_read`'s 2000-char body cap recoverable via archive_get.
     Point ARCHIVE_PATH at an encrypted volume if at-rest encryption is needed.
-  - No secrets, no key material, no ciphertext is ever written.
+  - No private key material, no PGP public key blocks, no Autocrypt keydata,
+    and no ciphertext is ever written.
 """
 
 from __future__ import annotations
