@@ -114,6 +114,29 @@ class TestContactBook:
         book.add("Alice", "Example", "alice@example.com")
         assert book.get("Alice")["email"] == "alice@example.com"
 
+    def test_get_by_surname(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice", "Example", "alice@example.com")
+        assert book.get("Example")["email"] == "alice@example.com"
+
+    def test_get_ignores_surrounding_whitespace(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice", "Example", "alice@example.com")
+        assert book.get("  Alice Example  ")["name"] == "Alice Example"
+
+    def test_get_collapses_internal_whitespace(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("John", "Smith", "john.smith@example.com")
+        assert book.get("John  Smith")["name"] == "John Smith"
+
+    def test_get_surname_survives_after_key_prefix_conflict(self, tmp_project):
+        # Surname lookup must not be shadowed by an unrelated key that
+        # merely starts with the same letters as the bare surname.
+        book = make_book(tmp_project)
+        book.add("Miller", "Grange", "miller@example.com")
+        book.add("Alice", "Miller", "alice@example.com")
+        assert book.get("Miller")["name"] == "Miller Grange"
+
     def test_get_by_email(self, tmp_project):
         book = make_book(tmp_project)
         book.add("Alice", "Example", "alice@example.com")

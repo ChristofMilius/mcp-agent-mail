@@ -49,6 +49,14 @@ def _uid_email(uid: str) -> str:
     return match.group(1).lower() if match else uid.lower()
 
 
+def _plain(s: str) -> str:
+    """Normalize a free-text string for comparison: lower, strip, collapse
+    internal whitespace runs to a single space."""
+    if not s:
+        return ""
+    return " ".join(s.lower().split())
+
+
 class IdentityGuardError(Exception):
     """
     Raised when a tool tries to mutate one of the identity entries.
@@ -147,17 +155,29 @@ class ContactBook:
             json.dump(self._data, f, indent=2, ensure_ascii=False)
 
     def _normalize(self, name_or_email: str) -> str | None:
-        if name_or_email in self._data:
-            return name_or_email
-        lower = name_or_email.lower()
+        """
+        Resolve a query string to a record key.
+
+        Tolerant lookup: leading/trailing whitespace is ignored, internal
+        runs of whitespace collapse to a single space (so 'John  Smith'
+        and ' John Smith ' both resolve), matching is case-insensitive,
+        and a bare surname is accepted. Lookup order: exact key, exact email,
+        key prefix, bare surname. The first match in each tier wins.
+        """
+        query = _plain(name_or_email)
+        if not query:
+            return None
         for key in self._data:
-            if key.lower() == lower:
+            if _plain(key) == query:
                 return key
         for key, val in self._data.items():
-            if val.get("email", "").lower() == lower:
+            if _plain(val.get("email", "")) == query:
                 return key
         for key in self._data:
-            if key.lower().startswith(lower):
+            if _plain(key).startswith(query):
+                return key
+        for key, val in self._data.items():
+            if val.get("surname") and _plain(val["surname"]) == query:
                 return key
         return None
 

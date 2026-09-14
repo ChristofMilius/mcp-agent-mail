@@ -43,10 +43,15 @@ def register(server, ctx) -> None:
 
     @server.tool()
     def contact_get(name_or_email: str) -> str:
-        """Look up one contact by name (prefix ok) or email.
+        """Look up one contact by name, surname, or email.
+
+        Matching is case-insensitive and whitespace-tolerant (extra spaces
+        ignored/collapsed). A full name, a name prefix, a bare surname, or
+        the email address all resolve if unique enough; the first record
+        whose key prefix matches wins for partial input.
 
         Args:
-            name_or_email: Contact name or email address.
+            name_or_email: Contact name, surname, or email address.
         """
         try:
             contact = contacts.get(name_or_email)

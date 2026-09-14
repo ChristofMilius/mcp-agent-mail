@@ -291,6 +291,36 @@ class TestMiscTools:
         assert "utc" in out
 
 
+class TestToolAuditing:
+    def test_tool_call_is_logged_with_args_and_result(self, tmp_project, caplog):
+        import logging
+
+        server = FakeServer()
+        register_all(server, make_ctx(tmp_project))
+        caplog.set_level(logging.DEBUG, logger="mcp_agent_mail.tool_surface")
+
+        out = server.tools["contact_get"]("Ghost Person")
+        assert json.loads(out)["status"] == "not_found"
+
+        messages = [r.message for r in caplog.records]
+        assert any(
+            m == "[tool contact_get] call contact_get(name_or_email='Ghost Person')"
+            for m in messages
+        ), messages
+        assert any("result" in m and "not_found" in m for m in messages), messages
+
+    def test_tool_result_preview_is_bounded(self, tmp_project, caplog):
+        import logging
+
+        server = FakeServer()
+        register_all(server, make_ctx(tmp_project))
+        caplog.set_level(logging.DEBUG, logger="mcp_agent_mail.tool_surface")
+
+        server.tools["contact_list"]()
+        messages = [r.message for r in caplog.records]
+        assert any("[tool contact_list] result" in m for m in messages), messages
+
+
 class TestServerBuild:
     def test_register_all_exposes_full_toolset(self, tmp_project):
         server = FakeServer()
