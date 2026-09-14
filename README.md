@@ -60,7 +60,7 @@ repeating and re-mangling noise it was never going to use.
 | Domain | Tools |
 |---|---|
 | Email | `email_check_inbox`, `email_read`, `email_send`, `email_reply` |
-| Contacts | `contact_list`, `contact_get`, `contact_add`, `contact_link_key`, `contact_set_fingerprint`, `contact_remove` |
+| Contacts | `contact_list`, `contact_get`, `contact_add`, `contact_link_key`, `contact_set_fingerprint`, `contact_clear_key`, `contact_remove` |
 | GPG | `gpg_list_keys`, `gpg_encrypt`, `gpg_verify`, `gpg_export_own_pubkey`, `gpg_own_status` |
 | Archive | `archive_search`, `archive_get` |
 | Utility | `get_current_datetime` |

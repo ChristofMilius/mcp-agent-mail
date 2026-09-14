@@ -138,6 +138,28 @@ class TestContactTools:
         out = server.tools["contact_set_fingerprint"]("Alice Example", "AABB")
         assert "Error in contact_set_fingerprint" in out
 
+    def test_clear_key_roundtrip(self, tmp_project):
+        server = FakeServer()
+        ctx = make_ctx(tmp_project)
+        register_all(server, ctx)
+        other = "00" * 20
+        server.tools["contact_add"](name="Alice Example", email="alice@example.com")
+        server.tools["contact_set_fingerprint"]("Alice Example", other)
+        out = server.tools["contact_clear_key"]("Alice Example", other)
+        assert '"status": "cleared"' in out
+        listed = server.tools["contact_list"]()
+        assert '"gpg_fingerprint": ""' in listed
+
+    def test_clear_key_mismatch_is_refused(self, tmp_project):
+        server = FakeServer()
+        ctx = make_ctx(tmp_project)
+        register_all(server, ctx)
+        other = "00" * 20
+        server.tools["contact_add"](name="Alice Example", email="alice@example.com")
+        server.tools["contact_set_fingerprint"]("Alice Example", other)
+        out = server.tools["contact_clear_key"]("Alice Example", "11" * 20)
+        assert "Error in contact_clear_key" in out
+
 
 class TestCryptoTools:
     def test_list_keys(self, tmp_project):
@@ -194,11 +216,11 @@ class TestServerBuild:
     def test_register_all_exposes_full_toolset(self, tmp_project):
         server = FakeServer()
         register_all(server, make_ctx(tmp_project))
-        assert len(server.tools) == 18
+        assert len(server.tools) == 19
         assert set(server.tools) == {
             "email_check_inbox", "email_read", "email_send", "email_reply",
             "contact_list", "contact_get", "contact_add", "contact_link_key",
-            "contact_set_fingerprint", "contact_remove",
+            "contact_set_fingerprint", "contact_clear_key", "contact_remove",
             "gpg_list_keys", "gpg_encrypt", "gpg_verify",
             "gpg_export_own_pubkey", "gpg_own_status",
             "archive_search", "archive_get",

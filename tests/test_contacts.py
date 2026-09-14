@@ -154,3 +154,71 @@ class TestFindAndLinkKey:
         )
         with pytest.raises(ValueError, match="[Aa]mbiguous"):
             book.find_and_link_key("Alice Example", crypto)
+
+
+class TestClearKey:
+    def test_clears_and_records_provenance(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice Example", "alice@example.com")
+        book.set_fingerprint("Alice Example", FPR40)
+        r = book.clear_key("Alice Example", FPR40)
+        assert r["status"] == "cleared"
+        assert r["cleared_fingerprint"] == FPR40
+        assert r["key_source"] == SOURCE_CLEARED
+        assert r["key_linked_at"]
+        c = book.get("Alice Example")
+        assert c["has_gpg_key"] is False
+        assert c["key_source"] == SOURCE_CLEARED
+
+    def test_normalizes_spaces_and_case(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice Example", "alice@example.com")
+        book.set_fingerprint("Alice Example", FPR40)
+        spaced = "aa bb cc dd ee ff 00 11 22 33 44 55 66 77 88 99 aa bb cc dd".upper()
+        r = book.clear_key("Alice Example", spaced)
+        assert r["status"] == "cleared"
+        assert r["cleared_fingerprint"] == FPR40
+
+    def test_mismatch_is_refused(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice Example", "alice@example.com")
+        book.set_fingerprint("Alice Example", FPR40)
+        other = "00" * 20
+        with pytest.raises(ValueError, match="does not match"):
+            book.clear_key("Alice Example", other)
+
+    def test_no_key_is_noop_not_error(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice Example", "alice@example.com")
+        r = book.clear_key("Alice Example", FPR40)
+        assert r["status"] == "no_key"
+        assert r["has_gpg_key"] is False
+
+    def test_rejects_garbage_fingerprint(self, tmp_project):
+        book = make_book(tmp_project)
+        book.add("Alice Example", "alice@example.com")
+        with pytest.raises(ValueError, match="40 hex"):
+            book.clear_key("Alice Example", "AABB")
+
+    def test_refuses_clearing_own_key(self, tmp_project):
+        root, env = tmp_project
+        import types
+
+        cfg = types.SimpleNamespace(
+            contacts_path=env["CONTACTS_PATH"], gpg_key_id=FPR40
+        )
+        book = ContactBook(cfg)
+        book.add("SelfMailbox", "agent@example.com")
+        book.set_fingerprint("SelfMailbox", FPR40)
+        with pytest.raises(ValueError, match="own configured key"):
+            book.clear_key("SelfMailbox", FPR40)
+        # Guard must not block clearing contacts with OTHER keys.
+        book.add("Alice Example", "alice@example.com")
+        other = "00" * 20
+        book.set_fingerprint("Alice Example", other)
+        assert book.clear_key("Alice Example", other)["status"] == "cleared"
+
+    def test_unknown_contact_raises(self, tmp_project):
+        book = make_book(tmp_project)
+        with pytest.raises(ValueError, match="not found"):
+            book.clear_key("Ghost Person", "A" * 40)

@@ -46,6 +46,8 @@ class ContactBook:
         self.path = Path(cfg.contacts_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data: dict = {}
+        # Agent's own key fingerprint (cfg.gpg_key_id) — never clearable.
+        self._own_gpg_key_id: str = getattr(cfg, "gpg_key_id", "") or ""
         self._load()
 
     def _load(self):
@@ -241,6 +243,85 @@ class ContactBook:
             "key_source": SOURCE_MANUAL,
             "key_linked_at": now,
             "status": "updated",
+        }
+
+    def clear_key(self, name_or_email: str, fingerprint: str) -> dict:
+        """
+        Deliberately remove a contact's linked PGP fingerprint.
+
+        FOOLPROOF against accidental clears of valid fingerprints:
+          - fingerprint MUST exactly match the contact's CURRENTLY linked
+            fingerprint. The caller must read it first via contact_get and
+            pass it unchanged; any mismatch is refused.
+          - The agent's OWN key (cfg.gpg_key_id) can never be cleared — it
+            is the agent's encryption identity, not a contact's.
+          - A contact with no linked key returns a no-op ("no_key"), not an
+            error — clearing nothing is never a failure.
+
+        On success the record keeps full provenance: key_source becomes
+        SOURCE_CLEARED and key_linked_at is stamped, so "deliberately
+        removed" is distinguishable from "never had one".
+        """
+        key = self._normalize(name_or_email)
+        if key is None:
+            raise ValueError(f"Contact not found: {name_or_email}")
+
+        current = self._data[key].get("gpg_fingerprint", "")
+        cleaned = fingerprint.replace(" ", "").upper()
+
+        # Validate the supplied fingerprint format first, same rules as
+        # set_fingerprint (no bare 16-char key IDs anywhere).
+        if not _FULL_FINGERPRINT_RE.match(cleaned):
+            raise ValueError(
+                f"Invalid fingerprint: expected exactly 40 hex characters (full GPG fingerprint), "
+                f"got {len(cleaned)} characters: '{cleaned}'. "
+                f"Read the current fingerprint via contact_get and pass it unchanged."
+            )
+
+        if not current:
+            return {
+                "name": key,
+                "email": self._data[key].get("email", ""),
+                "gpg_fingerprint": "",
+                "has_gpg_key": False,
+                "status": "no_key",
+                "note": "Contact has no linked PGP key — nothing to clear.",
+            }
+
+        if cleaned != current.upper():
+            raise ValueError(
+                f"Fingerprint mismatch: '{cleaned}' does not match the currently linked "
+                f"fingerprint '{current}' for '{key}'. Refused — clearing the wrong key "
+                f"is how a valid fingerprint gets destroyed. Read the current fingerprint "
+                f"via contact_get and pass it unchanged."
+            )
+
+        if self._own_gpg_key_id and cleaned == self._own_gpg_key_id.upper():
+            raise ValueError(
+                f"Refusing to clear fingerprint '{cleaned}': it is the agent's own "
+                f"configured key (GPG_KEY_ID). That key is the agent's encryption "
+                f"identity and must stay linked."
+            )
+
+        now = datetime.now().isoformat()
+        self._data[key].pop("gpg_fingerprint", None)
+        self._data[key]["key_source"] = SOURCE_CLEARED
+        self._data[key]["key_linked_at"] = now
+        self._data[key]["updated"] = now
+        self._save()
+        return {
+            "name": key,
+            "email": self._data[key].get("email", ""),
+            "gpg_fingerprint": "",
+            "has_gpg_key": False,
+            "cleared_fingerprint": cleaned,
+            "key_source": SOURCE_CLEARED,
+            "key_linked_at": now,
+            "status": "cleared",
+            "note": (
+                "Key deliberately cleared. Sends to this contact will be unencrypted "
+                "until a new key is linked (contact_link_key)."
+            ),
         }
 
     def remove(self, name_or_email: str):

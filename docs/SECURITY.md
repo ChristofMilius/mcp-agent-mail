@@ -54,6 +54,9 @@ Reliability first; secrecy is a stricter consequence of the same rule.
   rejected everywhere (Evil32 collision attack).
 - `contact_link_key` matches by exact UID email and **refuses** when multiple
   keys match an address — the model must resolve with a full fingerprint.
+- `contact_clear_key` refuses to clear unless the caller passes the contact's
+  **current linked fingerprint unchanged** (from `contact_get`), and refuses
+  outright to clear the agent's own key. Clearing the wrong record fails.
 - Contact records track provenance: `key_source` and `key_linked_at`.
 
 ### 5. Error boundaries

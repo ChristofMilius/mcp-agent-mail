@@ -95,6 +95,27 @@ def register(server, ctx) -> None:
             return tool_error("contact_set_fingerprint", e)
 
     @server.tool()
+    def contact_clear_key(name_or_email: str, fingerprint: str) -> str:
+        """Deliberately remove a contact's linked PGP fingerprint.
+
+        FOOLPROOF against accidental clears of valid fingerprints:
+          - fingerprint MUST exactly match the contact's CURRENTLY linked
+            fingerprint — read it via contact_get first, pass it unchanged.
+          - A mismatch is refused to prevent destroying a valid key.
+          - The agent's own key can never be cleared.
+          - Contacts with no linked key are a no-op, not an error.
+
+        Args:
+            name_or_email: Contact name or email address.
+            fingerprint: The contact's CURRENT fingerprint, from contact_get.
+        """
+        try:
+            result = contacts.clear_key(name_or_email, fingerprint)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return tool_error("contact_clear_key", e)
+
+    @server.tool()
     def contact_remove(name_or_email: str) -> str:
         """Remove a contact.
 
