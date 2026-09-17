@@ -202,6 +202,71 @@ not need the environment pre-seeded:
 }
 ```
 
+### HTTP transport with curl (manual probing)
+
+The HTTP mode speaks the standard MCP *streamable-http* transport. A raw
+HTTP call is **not** a single request-response: MCP is session-based. You
+initialize, then send JSON-RPC messages that carry an `Mcp-Session-Id`
+header, and results come back as **Server-Sent Events**
+(`text/event-stream`), not plain JSON.
+
+Start the server:
+
+```powershell
+uv run mcp-agent-mail serve --http --port 8000
+```
+
+**1. Initialize the session** — the `mcp-session-id` header in the
+response is the session token for every following call:
+
+```bash
+curl -s -D - -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl-test","version":"1.0"}}}'
+```
+
+**2. Signal the client is initialized** (protocol requirement; produces
+no response body):
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+```
+
+**3. Call a tool** — list the three most recent inbox messages:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"email_check_inbox","arguments":{"limit":3}}}'
+```
+
+The result arrives as an SSE frame; the useful payload is the `"text"`
+field inside the JSON (example, sanitized):
+
+```
+event: message
+data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"text":"{\n  \"folder\": \"INBOX\",\n  \"count\": 1,\n  \"messages\": [\n    {\n      \"uid\": \"100\",\n      \"folder\": \"INBOX\",\n      \"from\": \"John Smith <john.smith@example.com>\",\n      \"to\": \"agent@example.com\",\n      \"subject\": \"Hello\",\n      \"date\": \"Tue, 01 Jan 2026 10:00:00 +0100\"\n    }\n  ]\n}","type":"text"}],"isError":false}}
+```
+
+Reading runs the same PGP pipeline as stdio: inbound ciphertext is
+decrypted, sender key blocks are intercepted and linked in the contact
+book, and key material never reaches you as raw bytes:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"email_read","arguments":{"uid":"100"}}}'
+```
+
+> stdio is what MCP harnesses expect and what the server runs by default.
+> HTTP serves manual probing, remote access, and web-based clients — it
+> changes the transport only, never which tools are exposed.
+
 ### Tighten your harness's tool-use prompt
 
 Small local models occasionally misread an otherwise-unambiguous tool contract
