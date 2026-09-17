@@ -28,7 +28,10 @@ def _cmd_serve(args) -> int:
     from mcp_agent_mail.server import run
 
     transport = "streamable-http" if args.http else "stdio"
-    run(transport=transport, host=args.host, port=args.port)
+    try:
+        run(transport=transport, host=args.host, port=args.port)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 

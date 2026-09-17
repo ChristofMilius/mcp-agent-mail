@@ -36,6 +36,16 @@ class TestParser:
         main(["serve", "--http", "--port", "9000"])
         assert called == {"transport": "streamable-http", "host": "127.0.0.1", "port": 9000}
 
+    def test_serve_ctrl_c_exits_zero(self, monkeypatch):
+        """Ctrl+C during serve shuts down quietly (no traceback)."""
+
+        def fake_run(**kwargs):
+            raise KeyboardInterrupt
+
+        import mcp_agent_mail.server
+        monkeypatch.setattr(mcp_agent_mail.server, "run", fake_run)
+        assert main(["serve"]) == 0
+
     def test_version_exits_zero(self, capsys):
         with pytest.raises(SystemExit) as e:
             main(["--version"])
