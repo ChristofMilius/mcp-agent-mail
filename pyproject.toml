@@ -37,6 +37,14 @@ extend-exclude = [".venv", "data", "logs", "exported_keys"]
 select = ["E", "W", "F", "I", "UP"]
 ignore = ["E501"]
 
+# Point pyright at the project venv. Without this it resolves third-party
+# imports against the system Python and reports every one of them as missing,
+# which buries the findings that matter.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
