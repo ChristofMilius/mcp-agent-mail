@@ -14,6 +14,7 @@ secret is missing. The server will not run half-configured.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 
@@ -128,7 +129,11 @@ def create_server(ctx: AppContext | None = None) -> MCPServer:
     return server
 
 
-def run(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
+def run(
+    transport: Literal["stdio", "sse", "streamable-http"] = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> None:
     """Build and run the server.
 
     transport: "stdio" (default), "sse", or "streamable-http".
