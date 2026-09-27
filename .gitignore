@@ -1,51 +1,55 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Ignore everything by default, then explicitly un-ignore exactly the
+# hand-authored, non-regenerable source. Nothing can be tracked, staged or
+# pushed that is not listed below — by construction, not by remembering to
+# deny each one.
 
-# Virtual environments
-.venv/
-venv/
-env/
+*
 
-# uv
-.uv/
+# Project metadata, packaging and the dependency lock (hand-maintained).
+!.python-version
+!pyproject.toml
+!uv.lock
 
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-.eggs/
+# Legal + hand-written documentation
+!LICENSE
+!README.md
+!docs/
+!docs/**
 
-# Test / coverage
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
+# The package itself. `!src/` on its own does not reach inside the tree —
+# a directory has to be un-ignored before its contents can be — hence the
+# pair, for every versioned directory below.
+!src/
+!src/**
 
-# Ruff
-.ruff_cache/
+# Test suite
+!tests/
+!tests/**
 
-# IDE
-.idea/
-.vscode/
-*.swp
+# CI workflow
+!.github/
+!.github/**
 
-# Environment / secrets — NEVER commit
-.env
-.env.*
+# Template for local env config, not the config itself. The real .env has
+# no un-ignore rule anywhere in this file, so the default `*` keeps it out.
 !.env.example
 
-# Runtime data — may contain decrypted email bodies and logs
-data/
-logs/
-exported_keys/
-keys/
+# .gitignore must stay tracked so the rule set is versioned too
+!.gitignore
 
-# Internal journal — never published
-MILESTONE.md
+# Re-ignore the build noise that the !src/** and !tests/** rules above
+# swept back in — last matching rule wins, and these come last.
+__pycache__/
+*.py[cod]
 
-# OS
-.DS_Store
-Thumbs.db
+# Deliberately NOT whitelisted, so the leading `*` keeps them untracked:
+#
+#   .env            real credentials — never versioned, no un-ignore rule
+#   data/           runtime archive; may hold decrypted email bodies
+#   logs/           runtime logs
+#   exported_keys/  exported public keys (regenerable)
+#   keys/           key material
+#   MILESTONE.md    internal journal, never published
+#   .venv/  build/  dist/  *.egg-info/  .uv/       local build artifacts
+#   .ruff_cache/  .pytest_cache/  .coverage*  htmlcov/  coverage.xml
+#   .idea/  .vscode/  .DS_Store  Thumbs.db        editor/OS noise
